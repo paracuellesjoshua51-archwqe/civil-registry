@@ -21,6 +21,13 @@ import PwaUpdatePrompt from "./components/PwaUpdatePrompt";
 // HomePreloader uses the same dynamic import to warm it up during idle time.
 const Home = lazy(() => import("./pages/Home/Home"));
 
+// Safety net: if a chunk cannot be loaded (offline, or a stale service worker
+// cache), keep the app running instead of crashing into the ErrorBoundary.
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  console.warn("Chunk preload failed (offline or stale cache):", event.payload);
+});
+
 // Apply the saved theme, zoom and contrast before the first render so the
 // app never paints in the wrong mode after a restart.
 applyStoredDisplayPrefs();

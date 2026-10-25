@@ -27,6 +27,9 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 800,
+    // All CSS goes into one file, so no lazy CSS chunk (like bulkDelete-*.css)
+    // can fail to load offline or after a stale service worker cache.
+    cssCodeSplit: false,
     rollupOptions: {
       output: {
         manualChunks,
@@ -45,6 +48,8 @@ export default defineConfig({
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api\//],
         globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
+        // Default is 2 MB. Raise it so the larger vendor chunks are precached for offline use.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
     }),
   ],
