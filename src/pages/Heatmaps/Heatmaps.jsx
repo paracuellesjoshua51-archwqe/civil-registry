@@ -141,6 +141,10 @@ const YEARS = ["2024", "2025", "2026"];
 const EMPLOYMENT_VALUES = EMPLOYMENT_FILTERS.map((f) => f.value).filter((v) => v !== "all");
 const VOTING_VALUES = VOTING_FILTERS.map((f) => f.value).filter((v) => v !== "all");
 
+/* Sample generator limits. */
+const SAMPLE_MAX = 2000;
+const SAMPLE_DEFAULT = 100;
+
 /* Skeleton tuning: how many placeholder rows to draw, and how long the map
    waits for tiles before giving up on the overlay. */
 const SKELETON_TABLE_ROWS = 8;
@@ -440,6 +444,47 @@ function validateResidentRows(rows) {
     }
   });
   return { valid, errors };
+}
+
+/* Random barangay picker, weighted by the civil demo volumes so the sample looks realistic. */
+function weightedBarangayPicker() {
+  const items = RAW_BARANGAY_DATA.map((b) => ({
+    name: b.name,
+    weight: b.birth + b.marriage + b.death,
+  })).filter((i) => i.weight > 0);
+  const total = items.reduce((s, i) => s + i.weight, 0);
+  return () => {
+    let r = Math.random() * total;
+    for (const item of items) {
+      r -= item.weight;
+      if (r < 0) return item.name;
+    }
+    return items[items.length - 1].name;
+  };
+}
+
+/* Builds a CSV string in the same format as the template for the given import target. */
+function generateSampleCsv(target, count, year) {
+  const header = IMPORT_TARGETS[target].template[0];
+  const pickBarangay = weightedBarangayPicker();
+  const pad = (n) => String(n).padStart(2, "0");
+  const lines = [header];
+
+  for (let i = 0; i < count; i++) {
+    const barangay = pickBarangay();
+    if (target === "civil") {
+      const type = CIVIL_TYPES[Math.floor(Math.random() * CIVIL_TYPES.length)];
+      const month = 1 + Math.floor(Math.random() * 12);
+      const day = 1 + Math.floor(Math.random() * 28);
+      lines.push(`${barangay},${type},${year}-${pad(month)}-${pad(day)}`);
+    } else {
+      const age = Math.min(95, Math.floor(Math.random() * Math.random() * 100));
+      const employment = EMPLOYMENT_VALUES[Math.floor(Math.random() * EMPLOYMENT_VALUES.length)];
+      const voting = VOTING_VALUES[Math.floor(Math.random() * VOTING_VALUES.length)];
+      lines.push(`${barangay},${age},${employment},${voting}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 /* Civil counts per barangay for one year, from imported records. */
@@ -780,11 +825,12 @@ function DemographicDetail({ name, stats, onClose }) {
    IMPORT DIALOG
 ════════════════════════════════════ */
 
-function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
+function ImportDialog({ target, year, existingCount, onClose, onImport, onClear }) {
   const cfg = IMPORT_TARGETS[target];
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState("");
   const [result, setResult] = useState(null);
+  const [sampleCount, setSampleCount] = useState(SAMPLE_DEFAULT);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -797,7 +843,7 @@ function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
   function analyze(source) {
     const parsed = parseCsvText(source);
     if (parsed.rows.length === 0) {
-      setResult({ valid: [], errors: ["No data rows found. Paste CSV text or choose a file."] });
+      setResult({ valid: [], errors: ["No data rows found. Paste CSV text, choose a file, or generate a sample."] });
       return;
     }
     const missing = cfg.required.filter((h) => !parsed.headers.includes(h));
@@ -829,17 +875,28 @@ function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
     analyze(e.target.value);
   }
 
+  function handleGenerate() {
+    const n = Math.min(SAMPLE_MAX, Math.max(1, Math.floor(Number(sampleCount) || 0)));
+    const csv = generateSampleCsv(target, n, year);
+    setSampleCount(n);
+    setFileName(`sample-${n}-records`);
+    setText(csv);
+    analyze(csv);
+  }
+
+  function handleRemove() {
+    setText("");
+    setFileName("");
+    setResult(null);
+  }
+
   const validCount = result?.valid.length ?? 0;
   const errorCount = result?.errors.length ?? 0;
+  const hasInput = text.trim().length > 0;
 
   return (
     <div className="import-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div
-        className="import-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="import-dialog-title"
-      >
+      <div className="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-dialog-title">
         <div className="import-dialog__header">
           <div>
             <h2 id="import-dialog-title">{cfg.title}</h2>
@@ -857,6 +914,25 @@ function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
           </label>
           <button className="link-btn" onClick={() => downloadCsv(cfg.template.join("\n"), cfg.filename)}>
             Download template
+          </button>
+        </div>
+
+        <div className="import-generate">
+          <label className="import-generate__count">
+            <span>Sample size</span>
+            <input
+              type="number"
+              min={1}
+              max={SAMPLE_MAX}
+              value={sampleCount}
+              onChange={(e) => setSampleCount(e.target.value)}
+            />
+          </label>
+          <button className="btn-secondary" onClick={handleGenerate}>
+            Generate sample
+          </button>
+          <button className="link-btn" onClick={handleRemove} disabled={!hasInput}>
+            Remove
           </button>
           {fileName && <span className="import-dialog__meta">{fileName}</span>}
         </div>
@@ -895,11 +971,7 @@ function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
           <button className="btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button
-            className="btn-primary"
-            disabled={validCount === 0}
-            onClick={() => onImport(result.valid)}
-          >
+          <button className="btn-primary" disabled={validCount === 0} onClick={() => onImport(result.valid)}>
             Import {validCount > 0 ? validCount.toLocaleString() : ""} record(s)
           </button>
         </div>
@@ -2410,6 +2482,7 @@ export default function Heatmaps() {
       {importOpen && (
         <ImportDialog
           target={importTarget}
+          year={year}
           existingCount={isDemo ? importedResidents.length : importedCivil.length}
           onClose={() => setImportOpen(false)}
           onImport={handleImport}
