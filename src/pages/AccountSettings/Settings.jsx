@@ -1,3 +1,4 @@
+/* global __APP_VERSION__ */
 import { useEffect, useState } from "react";
 import "./Settings.css";
 import {
@@ -201,12 +202,14 @@ function DisplayPanel() {
 /* ── About ───────────────────────────────────────────────── */
 function AboutPanel() {
   const [isDesktop] = useState(isDesktopApp);
-  const [version, setVersion] = useState(null);
   const [storage, setStorage] = useState(null);
   const [copied, setCopied] = useState(false);
   const [online, setOnline] = useState(
     typeof navigator !== "undefined" ? navigator.onLine : true
   );
+
+  // Same value as package.json "version", injected by vite.config.js.
+  const versionText = `v${__APP_VERSION__}`;
 
   const platform = typeof navigator !== "undefined" ? navigator.platform || "Unknown" : "Unknown";
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
@@ -215,20 +218,6 @@ function AboutPanel() {
   const ramGb = typeof navigator !== "undefined" ? navigator.deviceMemory : undefined;
   const screenW = typeof window !== "undefined" ? window.screen.width : 0;
   const screenH = typeof window !== "undefined" ? window.screen.height : 0;
-
-  useEffect(() => {
-    if (!isDesktop || typeof window.desktop.getAppVersion !== "function") {
-      return undefined;
-    }
-
-    let active = true;
-    window.desktop
-      .getAppVersion()
-      .then((v) => { if (active) setVersion(v || "Unknown"); })
-      .catch(() => { if (active) setVersion("Unknown"); });
-
-    return () => { active = false; };
-  }, [isDesktop]);
 
   useEffect(() => {
     let active = true;
@@ -255,11 +244,6 @@ function AboutPanel() {
     const t = setTimeout(() => setCopied(false), 2000);
     return () => clearTimeout(t);
   }, [copied]);
-
-  let versionText;
-  if (!isDesktop) versionText = "Browser";
-  else if (version) versionText = version;
-  else versionText = "Loading…";
 
   // Requirement checks: "pass", "warn", or "unknown"
   const checkRequirement = (req) => {

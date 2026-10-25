@@ -1,59 +1,29 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import { VitePWA } from 'vite-plugin-pwa'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { VitePWA } from "vite-plugin-pwa";
+import { readFileSync } from "node:fs";
 
-// Only used by `npm run dev` and `npm run preview` on your own machine.
-const apiProxy = {
-  '/api': {
-    target: 'http://127.0.0.1:5000',
-    changeOrigin: true,
-    secure: false,
-  },
-}
+// Read the version from package.json so the About page always matches it.
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 export default defineConfig({
-  base: '/',
-
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'prompt',
-      // Registration is handled by PwaUpdatePrompt (useRegisterSW),
-      // so the plugin must not inject its own registerSW script.
-      injectRegister: null,
-      manifest: false, // we ship our own public/manifest.webmanifest
+      registerType: "prompt", // PwaUpdatePrompt shows the update banner
+      manifest: false,        // public/manifest.webmanifest is used instead
+      includeAssets: ["scc.png", "lcr.jpg", "icons/pwa-192.png", "icons/pwa-512.png", "offline.html"],
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,jpg,jpeg,svg,webp,woff,woff2,webmanifest}'],
-        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-        navigateFallback: '/index.html',
+        // Lets a reload of /dashboard work offline. API calls are never served from this fallback.
+        navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api\//],
-        // No skipWaiting / clientsClaim: the new version waits until the user accepts the update.
-        cleanupOutdatedCaches: true,
+        globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
       },
-      devOptions: { enabled: false },
     }),
   ],
-
-  build: {
-    sourcemap: false,
-    chunkSizeWarningLimit: 1000,
-  },
-
-  server: {
-    host: true,
-    port: 5173,
-    strictPort: false,
-    allowedHosts: ['.devtunnels.ms'],
-    proxy: apiProxy,
-  },
-
-  preview: {
-    host: true,
-    port: 4173,
-    strictPort: false,
-    allowedHosts: ['.devtunnels.ms'],
-    proxy: apiProxy,
-  },
-})
+});

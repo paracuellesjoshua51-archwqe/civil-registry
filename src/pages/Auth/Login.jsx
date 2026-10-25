@@ -5,7 +5,7 @@ import axios from "axios";
 import "./Login.css";
 import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
 import { pushToast } from "../../services/toastService";
-import { usePermissions } from "../../context/PermissionContext";
+import { usePermissions, markSessionActive } from "../../context/PermissionContext";
 
 import bgImage from "../../assets/images/home.jpg";
 import loginLogo from "../../assets/images/scc.png";
@@ -79,14 +79,15 @@ const Login = () => {
   const countdownRef = useRef(null);
 
   const navigate = useNavigate();
-  const { refresh, restoreFromCache } = usePermissions();
+  const { refresh, restoreFromCache, hasAccess, loading: sessionLoading } = usePermissions();
 
-  // Already signed in this browser session -> go straight to dashboard
+  // Go to the dashboard only when the session check has finished AND
+  // confirmed a real session for this tab. sessionStorage alone is not trusted.
   useEffect(() => {
-    if (sessionStorage.getItem("isAuthenticated") === "true") {
+    if (!sessionLoading && hasAccess("dashboard")) {
       navigate("/dashboard", { replace: true });
     }
-  }, [navigate]);
+  }, [sessionLoading, hasAccess, navigate]);
 
   // Lock countdown timer
   useEffect(() => {
@@ -135,8 +136,8 @@ const Login = () => {
 
         pushToast({ title: "Login successful!", message: msg, success: true, duration: 2000 });
 
-        // Confirm the session in-app, then go straight to the dashboard.
-        // No full page reload, so no extra login screen or loading bar.
+        // Mark this tab as logged in, then confirm the session with the server.
+        markSessionActive();
         const signedIn = await refresh();
         if (signedIn) {
           navigate("/dashboard", { replace: true });
@@ -175,8 +176,7 @@ const Login = () => {
           const offlineIsAdmin =
             Boolean(u.is_admin) || String(u.role || "").toLowerCase().includes("admin");
 
-          // Same shape the session context writes, so the admin flag and role
-          // survive an offline reload.
+          // Same shape PermissionContext writes, so role and admin flag survive a reload.
           localStorage.setItem("cr_session_cache_v1", JSON.stringify({
             username: offlineUsername,
             role: u.role || (offlineIsAdmin ? "Administrator" : "User"),
