@@ -11,6 +11,25 @@ import loginLogo from "../../assets/images/scc.png";
 
 const API = import.meta.env.VITE_API_BASE_URL || "";
 
+// Same key as ProtectedRoute. Set only after a successful login in this launch.
+const UNLOCK_KEY = "lcr_unlocked_this_launch";
+
+function markUnlockedThisLaunch() {
+  try {
+    sessionStorage.setItem(UNLOCK_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+function isUnlockedThisLaunch() {
+  try {
+    return sessionStorage.getItem(UNLOCK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 const UserIcon = () => (
   <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -80,14 +99,15 @@ const Login = () => {
   const navigate = useNavigate();
   const { refresh, restoreFromCache, authenticated, loading: sessionLoading } = usePermissions();
 
-
-  // Go to the dashboard only when the session check has finished AND
-  // confirmed a real session for this tab. sessionStorage alone is not trusted.
+  // Only go to the dashboard when the session is valid AND the user logged in
+  // during this launch. A cached session alone (offline restore) is not enough,
+  // so reopening the app while offline shows the login page.
   useEffect(() => {
-  if (!sessionLoading && authenticated) {
-    navigate("/dashboard", { replace: true });
-  }
-}, [sessionLoading, authenticated, navigate]);
+    if (sessionLoading || !authenticated) return;
+    if (isUnlockedThisLaunch()) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [sessionLoading, authenticated, navigate]);
 
   // Lock countdown timer
   useEffect(() => {
@@ -138,6 +158,7 @@ const Login = () => {
 
         // Mark this tab as logged in, then confirm the session with the server.
         markSessionActive();
+        markUnlockedThisLaunch();
         const signedIn = await refresh();
         if (signedIn) {
           navigate("/dashboard", { replace: true });
@@ -177,12 +198,12 @@ const Login = () => {
             Boolean(u.is_admin) || String(u.role || "").toLowerCase().includes("admin");
 
           // Same shape PermissionContext writes, so role and admin flag survive a reload.
-           saveSessionCache({
-  username: offlineUsername,
-  role: u.role,
-  permissions: u.permissions,
-  isAdmin: offlineIsAdmin,
-});
+          saveSessionCache({
+            username: offlineUsername,
+            role: u.role,
+            permissions: u.permissions,
+            isAdmin: offlineIsAdmin,
+          });
 
           pushToast({
             title: "Offline login",
@@ -190,6 +211,8 @@ const Login = () => {
             success: true,
             duration: 2000,
           });
+
+          markUnlockedThisLaunch();
 
           if (restoreFromCache()) {
             navigate("/dashboard", { replace: true });
