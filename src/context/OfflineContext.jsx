@@ -9,7 +9,7 @@ import { refreshAllOfflineCredentials } from '../offline/archivePassword';
 import { warmBirthCache } from '../offline/birthOffline';
 import { warmVitalCache } from '../offline/vitalOffline';
 import { refreshTrackingPersonnel } from '../offline/adapters/documentTrackingOffline';
-import { getCachedSession } from '../offline/authCache';
+import { usePermissions } from './PermissionContext';
 import { pushToast } from '../services/toastService';
 
 const OfflineContext = createContext(null);
@@ -51,6 +51,7 @@ function tallyModule(rows, entity, user) {
 }
 
 export function OfflineProvider({ children }) {
+  const { authenticated } = usePermissions();
   const [online, setOnline] = useState(isOnline());
   const [sync, setSync] = useState(getSyncState());
   const [counts, setCounts] = useState(EMPTY_COUNTS);
@@ -134,9 +135,9 @@ export function OfflineProvider({ children }) {
     };
   }, [refreshCounts, notify]);
 
-  // Keeps the offline copies fresh while online. Skips until a cached login exists.
+  // Keeps the offline copies fresh while online. Runs only for a confirmed session.
   useEffect(() => {
-    if (!online) return undefined;
+    if (!online || !authenticated) return undefined;
 
     let alive = true;
     let cancels = [];
@@ -147,7 +148,7 @@ export function OfflineProvider({ children }) {
     };
 
     const run = async () => {
-      if (!alive || !(await getCachedSession())) return;
+      if (!alive) return;
       stopDownloads();
 
       await refreshTrackingPersonnel();
@@ -179,7 +180,7 @@ export function OfflineProvider({ children }) {
       clearInterval(timer);
       stopDownloads();
     };
-  }, [online]);
+  }, [online, authenticated]);
 
   return (
     <OfflineContext.Provider

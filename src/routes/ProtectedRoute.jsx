@@ -3,13 +3,15 @@ import { usePermissions } from "../context/PermissionContext";
 import LoadingScreen from "./LoadingScreen";
 import useHeartbeat from "../hooks/useHeartbeat";
 
+// Renders children only when a session is confirmed: online with a server
+// session, or offline with a valid, unexpired cached session.
 export default function ProtectedRoute({ module, adminOnly = false, children }) {
-  const { hasAccess, is_admin, loading, waking } = usePermissions();
+  const { authenticated, hasAccess, is_admin, loading, waking } = usePermissions();
 
-  useHeartbeat(hasAccess("dashboard"));
+  useHeartbeat(authenticated);
 
   if (loading) return <LoadingScreen waking={waking} />;
-  if (!hasAccess("dashboard")) return <Navigate to="/login" replace />;
+  if (!authenticated) return <Navigate to="/login" replace />;
   if (adminOnly && !is_admin) return <Navigate to="/access-denied" replace />;
   if (module && !hasAccess(module)) return <Navigate to="/access-denied" replace />;
 

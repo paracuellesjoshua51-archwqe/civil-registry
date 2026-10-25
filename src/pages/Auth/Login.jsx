@@ -5,8 +5,7 @@ import axios from "axios";
 import "./Login.css";
 import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
 import { pushToast } from "../../services/toastService";
-import { usePermissions, markSessionActive } from "../../context/PermissionContext";
-
+import { usePermissions, markSessionActive, saveSessionCache } from "../../context/PermissionContext";
 import bgImage from "../../assets/images/home.jpg";
 import loginLogo from "../../assets/images/scc.png";
 
@@ -79,15 +78,16 @@ const Login = () => {
   const countdownRef = useRef(null);
 
   const navigate = useNavigate();
-  const { refresh, restoreFromCache, hasAccess, loading: sessionLoading } = usePermissions();
+  const { refresh, restoreFromCache, authenticated, loading: sessionLoading } = usePermissions();
+
 
   // Go to the dashboard only when the session check has finished AND
   // confirmed a real session for this tab. sessionStorage alone is not trusted.
   useEffect(() => {
-    if (!sessionLoading && hasAccess("dashboard")) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [sessionLoading, hasAccess, navigate]);
+  if (!sessionLoading && authenticated) {
+    navigate("/dashboard", { replace: true });
+  }
+}, [sessionLoading, authenticated, navigate]);
 
   // Lock countdown timer
   useEffect(() => {
@@ -177,13 +177,12 @@ const Login = () => {
             Boolean(u.is_admin) || String(u.role || "").toLowerCase().includes("admin");
 
           // Same shape PermissionContext writes, so role and admin flag survive a reload.
-          localStorage.setItem("cr_session_cache_v1", JSON.stringify({
-            username: offlineUsername,
-            role: u.role || (offlineIsAdmin ? "Administrator" : "User"),
-            permissions: Array.isArray(u.permissions) ? u.permissions : [],
-            isAdmin: offlineIsAdmin,
-            savedAt: Date.now(),
-          }));
+           saveSessionCache({
+  username: offlineUsername,
+  role: u.role,
+  permissions: u.permissions,
+  isAdmin: offlineIsAdmin,
+});
 
           pushToast({
             title: "Offline login",
