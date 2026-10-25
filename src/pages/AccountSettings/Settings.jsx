@@ -34,6 +34,10 @@ const SHORTCUTS = [
 const isDesktopApp = () =>
   typeof window !== "undefined" && !!window.desktop;
 
+// Label shown for where the app runs.
+const environmentLabel = (isDesktop) =>
+  isDesktop ? "Desktop App (Electron)" : "Web Application";
+
 const formatBytes = (bytes) => {
   if (!bytes && bytes !== 0) return "Unknown";
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
@@ -274,14 +278,13 @@ function AboutPanel() {
     return { status: "unknown", note: "Not checked automatically" };
   };
 
+  // Copied text: only the app details. No online status and no user agent.
   const copySystemInfo = async () => {
     const lines = [
       `Local Civil Register ${versionText}`,
-      `Environment: ${isDesktop ? "Desktop app (Electron)" : "Web browser"}`,
+      `Environment: ${environmentLabel(isDesktop)}`,
       `Platform: ${platform}`,
       `Screen: ${screenW} x ${screenH}`,
-      `Online: ${online ? "Yes" : "No"}`,
-      `User agent: ${ua}`,
     ].join("\n");
 
     try {
@@ -305,7 +308,7 @@ function AboutPanel() {
           <div className="st-info-row"><dt>Version</dt><dd>{versionText}</dd></div>
           <div className="st-info-row">
             <dt>Environment</dt>
-            <dd>{isDesktop ? "Desktop app (Electron)" : "Web browser"}</dd>
+            <dd>{environmentLabel(isDesktop)}</dd>
           </div>
           <div className="st-info-row"><dt>Location</dt><dd>San Carlos City</dd></div>
           <div className="st-info-row"><dt>Platform</dt><dd>{platform}</dd></div>

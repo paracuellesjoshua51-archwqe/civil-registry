@@ -1,7 +1,7 @@
 // src/components/PwaUpdatePrompt.jsx
 import { useRegisterSW } from "virtual:pwa-register/react";
 
-const UPDATE_CHECK_MS = 60 * 60 * 1000; // check every hour
+const UPDATE_CHECK_MS = 60 * 60 * 1000; // hourly check while the app stays open
 
 const styles = {
   wrap: {
@@ -19,22 +19,9 @@ const styles = {
     padding: 16,
     fontFamily: "inherit",
   },
-  title: {
-    margin: 0,
-    fontSize: 15,
-    fontWeight: 600,
-  },
-  text: {
-    margin: "4px 0 14px",
-    fontSize: 13,
-    color: "#6b7280",
-    lineHeight: 1.4,
-  },
-  actions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: 8,
-  },
+  title: { margin: 0, fontSize: 15, fontWeight: 600 },
+  text: { margin: "4px 0 14px", fontSize: 13, color: "#6b7280", lineHeight: 1.4 },
+  actions: { display: "flex", justifyContent: "flex-end", gap: 8 },
   later: {
     padding: "7px 14px",
     borderRadius: 6,
@@ -62,11 +49,20 @@ export default function PwaUpdatePrompt() {
     updateServiceWorker,
   } = useRegisterSW({
     onRegisteredSW(_url, reg) {
-      if (reg) {
-        setInterval(() => {
-          if (!document.hidden) reg.update();
-        }, UPDATE_CHECK_MS);
-      }
+      if (!reg) return;
+
+      // Check right away when the app opens
+      reg.update();
+
+      // Check again every hour while the app stays open
+      setInterval(() => {
+        if (!document.hidden) reg.update();
+      }, UPDATE_CHECK_MS);
+
+      // Check again when the user comes back to the app window
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) reg.update();
+      });
     },
     onRegisterError(error) {
       console.error("[PWA] Service worker registration failed:", error);
