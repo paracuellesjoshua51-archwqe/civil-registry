@@ -1,5 +1,5 @@
 // src/main.jsx
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import "./index.css";
@@ -16,11 +16,23 @@ import ToastContainer from "./components/ToastContainer";
 import GlobalRealtime from "./components/GlobalRealtime";
 import ErrorBoundary from "./components/ErrorBoundary";
 import PwaUpdatePrompt from "./components/PwaUpdatePrompt";
-import Home from "./pages/Home/Home";
+
+// Home is lazy-loaded (not statically imported) so it gets its own chunk.
+// HomePreloader uses the same dynamic import to warm it up during idle time.
+const Home = lazy(() => import("./pages/Home/Home"));
 
 // Apply the saved theme, zoom and contrast before the first render so the
 // app never paints in the wrong mode after a restart.
 applyStoredDisplayPrefs();
+
+const HomeFallback = () => (
+  <div
+    className="module-loading-state"
+    style={{ padding: "2rem", textAlign: "center", color: "#64748b" }}
+  >
+    Loading…
+  </div>
+);
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
@@ -47,9 +59,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 
                 <Route
                   element={
-                    <ProtectedRoute module="dashboard">
-                      <Home />
-                    </ProtectedRoute>
+                    // Suspense shows a fallback while the lazy Home chunk loads.
+                    <Suspense fallback={<HomeFallback />}>
+                      <ProtectedRoute module="dashboard">
+                        <Home />
+                      </ProtectedRoute>
+                    </Suspense>
                   }
                 >
                   <Route path="dashboard" element={<></>} />
