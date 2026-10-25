@@ -23,47 +23,42 @@ export function lock() {
 const credKey = (u) => `offlineAuth:${u.toLowerCase()}`
 const attemptKey = (u) => `offlineAttempts:${u.toLowerCase()}`
 
-// Setting a meta value to null marks it as deleted (no deleteMeta is assumed).
-const metaGet = async (k) => (await getMeta(k)) ?? null
-const metaSet = (k, v) => setMeta(k, v)
-const metaDel = (k) => setMeta(k, null)
-
 // Tawga sa Login.jsx human sa malampuson nga online login
 export async function saveOfflineCredential(username, password, profile = {}) {
   const salt = randomSalt()
   const key = await deriveKey(password, salt)
   const blob = await encryptJSON(key, { check: 'ok', profile })
-  await metaSet(credKey(username), { salt, blob, savedAt: Date.now() })
-  await metaDel(attemptKey(username))
+  await setMeta(credKey(username), { salt, blob, savedAt: Date.now() })
+  await setMeta(attemptKey(username), null)
   sessionKey = key
   sessionUser = { username, ...profile }
 }
 
 export async function hasOfflineCredential(username) {
-  return !!(await metaGet(credKey(username)))
+  return !!(await getMeta(credKey(username)))
 }
 
 // Offline login. Return { ok, profile } o { ok:false, reason }
 export async function unlockOffline(username, password) {
-  const row = await metaGet(credKey(username))
+  const row = await getMeta(credKey(username))
   if (!row) return { ok: false, reason: 'no_credential' }
   const { salt, blob, savedAt } = row
   if (Date.now() - savedAt > MAX_AGE_MS) return { ok: false, reason: 'expired' }
 
-  const att = (await metaGet(attemptKey(username))) || { count: 0, until: 0 }
+  const att = (await getMeta(attemptKey(username))) || { count: 0, until: 0 }
   if (att.until > Date.now()) return { ok: false, reason: 'locked', retryAt: att.until }
 
   try {
     const key = await deriveKey(password, salt)
     const { check, profile } = await decryptJSON(key, blob)
     if (check !== 'ok') throw new Error('bad')
-    await metaDel(attemptKey(username))
+    await setMeta(attemptKey(username), null)
     sessionKey = key
     sessionUser = { username, ...profile }
     return { ok: true, profile: sessionUser }
   } catch {
     const count = att.count + 1
-    await metaSet(attemptKey(username), {
+    await setMeta(attemptKey(username), {
       count: count >= MAX_ATTEMPTS ? 0 : count,
       until: count >= MAX_ATTEMPTS ? Date.now() + LOCKOUT_MS : 0,
     })
@@ -72,7 +67,7 @@ export async function unlockOffline(username, password) {
 }
 
 export async function clearOfflineCredential(username) {
-  await metaDel(credKey(username))
-  await metaDel(attemptKey(username))
+  await setMeta(credKey(username), null)
+  await setMeta(attemptKey(username), null)
   lock()
 }

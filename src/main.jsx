@@ -26,7 +26,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     {/* ErrorBoundary shows a readable message if a render crashes, instead of a blank page. */}
     <ErrorBoundary>
-      {/* Router wraps PermissionProvider so Navigate works inside ProtectedRoute */}
+      {/* Router wraps everything so Navigate and useNavigate work. */}
       <Router>
         <ToastContainer />
         {/* Shows the "new version available" banner and registers the service worker. */}
@@ -39,14 +39,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(
                 survives navigation between modules. */}
             <RefreshProvider>
               <Routes>
-                {/* Public routes */}
-                <Route path="/" element={<Navigate to="/login" replace />} />
+                {/* "/" goes to the dashboard. ProtectedRoute decides: a valid
+                    session (online or cached) stays there, otherwise it goes to login. */}
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/login" element={<><Login /><HomePreloader /></>} />
                 <Route path="/access-denied" element={<AccessDenied />} />
 
-                {/* Protected shell. One pathless layout route keeps Home mounted
-                    while you move between pages; Home reads the URL itself to
-                    decide which page to show. */}
                 <Route
                   element={
                     <ProtectedRoute module="dashboard">
@@ -62,8 +60,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
                   <Route path="offline-sync" element={<></>} />
                 </Route>
 
-                {/* Catch-all */}
-                <Route path="*" element={<Navigate to="/login" replace />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
             </RefreshProvider>
           </OfflineProvider>

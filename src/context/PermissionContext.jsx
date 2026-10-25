@@ -13,18 +13,12 @@ const FETCH_TIMEOUT_MS = 45000;
 // decides real access; this only keeps the UI usable while the server cannot
 // be reached. Nothing secret is stored (no password, no token).
 const SESSION_CACHE_KEY = "cr_session_cache_v1";
-const OFFLINE_GRACE_DAYS = 7;
 
 function readSessionCache() {
   try {
     const raw = localStorage.getItem(SESSION_CACHE_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw);
-    if (Date.now() - (c.savedAt || 0) > OFFLINE_GRACE_DAYS * 86400000) {
-      localStorage.removeItem(SESSION_CACHE_KEY);
-      return null;
-    }
-    return c;
+    return JSON.parse(raw);
   } catch {
     return null;
   }

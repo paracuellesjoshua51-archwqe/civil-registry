@@ -9,6 +9,7 @@ import { refreshAllOfflineCredentials } from '../offline/archivePassword';
 import { warmBirthCache } from '../offline/birthOffline';
 import { warmVitalCache } from '../offline/vitalOffline';
 import { refreshTrackingPersonnel } from '../offline/adapters/documentTrackingOffline';
+import { getCachedSession } from '../offline/authCache';
 import { pushToast } from '../services/toastService';
 
 const OfflineContext = createContext(null);
@@ -17,7 +18,6 @@ const MODULES = ['birth', 'marriage', 'death', 'tracking'];
 const EMPTY_COUNTS = { pending: 0, syncing: 0, failed: 0, conflict: 0, synced: 0, waiting: 0, total: 0 };
 const EMPTY_MODULE = { pending: 0, waiting: 0, syncing: 0, failed: 0, conflict: 0, synced: 0, total: 0 };
 const WARMUP_INTERVAL_MS = 10 * 60 * 1000;
-const LOGIN_POLL_MS = 1000;
 
 async function requestPersistence() {
   try {
@@ -27,15 +27,7 @@ async function requestPersistence() {
   }
 }
 
-// True once the user has logged in on this tab. sessionStorage read only.
-function hasLoginSession() {
-  try {
-    return Boolean((sessionStorage.getItem('username') || '').trim());
-  } catch {
-    return false;
-  }
-}
-
+// Username of the current tab's login. Used only to split "mine" vs "waiting" in the outbox tally.
 function currentUsername() {
   try {
     return sessionStorage.getItem('username') || '';
@@ -142,14 +134,12 @@ export function OfflineProvider({ children }) {
     };
   }, [refreshCounts, notify]);
 
-  // Keeps the offline copies fresh while online. Waits for a login first.
+  // Keeps the offline copies fresh while online. Skips until a cached login exists.
   useEffect(() => {
     if (!online) return undefined;
 
     let alive = true;
     let cancels = [];
-    let timer = null;
-    let loginPoll = null;
 
     const stopDownloads = () => {
       cancels.forEach((c) => c?.());
@@ -157,7 +147,7 @@ export function OfflineProvider({ children }) {
     };
 
     const run = async () => {
-      if (!alive || !hasLoginSession()) return;
+      if (!alive || !(await getCachedSession())) return;
       stopDownloads();
 
       await refreshTrackingPersonnel();
@@ -181,22 +171,11 @@ export function OfflineProvider({ children }) {
       run().catch((err) => console.warn('[OfflineContext] warm-up failed:', err));
     };
 
-    if (hasLoginSession()) {
-      safeRun();
-      timer = setInterval(safeRun, WARMUP_INTERVAL_MS);
-    } else {
-      loginPoll = setInterval(() => {
-        if (!hasLoginSession()) return;
-        clearInterval(loginPoll);
-        loginPoll = null;
-        safeRun();
-        timer = setInterval(safeRun, WARMUP_INTERVAL_MS);
-      }, LOGIN_POLL_MS);
-    }
+    safeRun();
+    const timer = setInterval(safeRun, WARMUP_INTERVAL_MS);
 
     return () => {
       alive = false;
-      clearInterval(loginPoll);
       clearInterval(timer);
       stopDownloads();
     };
