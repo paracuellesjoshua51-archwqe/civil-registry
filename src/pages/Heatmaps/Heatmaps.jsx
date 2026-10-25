@@ -114,6 +114,8 @@ const TREND_MONTHS_BASE = [
   { label: "May", birth: 620, death: 101 },
 ];
 
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 /* Low = red, High = blue. Warm colors cover the lower-middle range, cool colors the upper range. */
 const HEAT_SCALE = [
   { max: 150, label: "0 - 150 (Very Low)", color: "#dc2626", text: "#ffffff" },
@@ -127,9 +129,17 @@ const NO_DATA_COLOR = "#9aa2b5";
 const ALL_BARANGAYS = "All Barangays";
 const VIEW_CIVIL = "civil";
 const VIEW_DEMOGRAPHICS = "demographics";
+const SOURCE_DEMO = "demo";
+const SOURCE_REAL = "real";
 
 const CERT_TYPES = ["All Certificates", "Live Birth", "Marriage", "Death"];
+const CIVIL_TYPES = ["Live Birth", "Marriage", "Death"];
 const YEARS = ["2024", "2025", "2026"];
+
+/* Filter values come from the shared demographics constants, so demo and imported
+   residents always use the same categories the filters understand. */
+const EMPLOYMENT_VALUES = EMPLOYMENT_FILTERS.map((f) => f.value).filter((v) => v !== "all");
+const VOTING_VALUES = VOTING_FILTERS.map((f) => f.value).filter((v) => v !== "all");
 
 /* Skeleton tuning: how many placeholder rows to draw, and how long the map
    waits for tiles before giving up on the overlay. */
@@ -161,6 +171,40 @@ const ID_FILTERS = [
   { value: "with", label: "Has PhilSys ID" },
   { value: "without", label: "No PhilSys ID" },
 ];
+
+/* Import targets: each describes its columns, validation, and template. */
+const IMPORT_TARGETS = {
+  civil: {
+    title: "Import Civil Registry Records",
+    description:
+      "One row per certificate. Required columns: barangay, type (Live Birth, Marriage or Death), date (YYYY-MM-DD).",
+    required: ["barangay", "type", "date"],
+    validate: validateCivilRows,
+    label: "civil registry records",
+    filename: "civil-registry-template.csv",
+    template: [
+      "barangay,type,date",
+      `${BARANGAY_NAMES[0]},Live Birth,2026-01-14`,
+      "Prosperidad,Marriage,2026-02-03",
+      "Rizal,Death,2026-03-21",
+    ],
+  },
+  demographics: {
+    title: "Import Resident Records",
+    description: `One row per resident. Required columns: barangay, age (0 to 120), employment (${EMPLOYMENT_VALUES.join(
+      ", "
+    )}), voting (${VOTING_VALUES.join(", ")}).`,
+    required: ["barangay", "age", "employment", "voting"],
+    validate: validateResidentRows,
+    label: "resident records",
+    filename: "resident-records-template.csv",
+    template: [
+      "barangay,age,employment,voting",
+      `${BARANGAY_NAMES[0]},34,${EMPLOYMENT_VALUES[0]},${VOTING_VALUES[0]}`,
+      `Prosperidad,68,${EMPLOYMENT_VALUES[EMPLOYMENT_VALUES.length - 1]},${VOTING_VALUES[0]}`,
+    ],
+  },
+};
 
 /* ════════════════════════════════════
    HELPERS
@@ -266,6 +310,160 @@ function downloadCsv(csv, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/* Small seeded PRNG so demo residents are the same on every load. */
+function mulberry32(seed) {
+  let s = seed;
+  return function next() {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* Demo residents, distributed across barangays in proportion to the civil demo volumes. */
+function generateDemoResidents(total) {
+  const rng = mulberry32(20260);
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+  const sumW = RAW_BARANGAY_DATA.reduce((s, b) => s + b.birth + b.marriage + b.death, 0);
+  const out = [];
+  RAW_BARANGAY_DATA.forEach((b) => {
+    const w = b.birth + b.marriage + b.death;
+    const n = Math.round((total * w) / sumW);
+    for (let i = 0; i < n; i++) {
+      out.push({
+        barangay: b.name,
+        age: Math.min(95, Math.floor(rng() * rng() * 100)),
+        employment: pick(EMPLOYMENT_VALUES),
+        voting: pick(VOTING_VALUES),
+      });
+    }
+  });
+  return out;
+}
+
+const DEMO_RESIDENTS = generateDemoResidents(1400);
+
+/* Minimal CSV parser: handles quoted fields, escaped quotes, and CRLF line endings. */
+function parseCsvText(text) {
+  const lines = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      lines.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) {
+    row.push(field);
+    lines.push(row);
+  }
+
+  const nonEmpty = lines.filter((r) => r.some((v) => v.trim() !== ""));
+  if (nonEmpty.length === 0) return { headers: [], rows: [] };
+
+  const headers = nonEmpty[0].map((h) => h.trim().toLowerCase());
+  const rows = nonEmpty.slice(1).map((vals, idx) => {
+    const values = {};
+    headers.forEach((h, j) => {
+      values[h] = (vals[j] ?? "").trim();
+    });
+    return { lineNo: idx + 2, values };
+  });
+  return { headers, rows };
+}
+
+function validateCivilRows(rows) {
+  const valid = [];
+  const errors = [];
+  rows.forEach(({ lineNo, values }) => {
+    const type = CIVIL_TYPES.find((t) => t.toLowerCase() === (values.type || "").toLowerCase());
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(values.date || "");
+    if (!BARANGAY_NAMES.includes(values.barangay)) {
+      errors.push(`Row ${lineNo}: unknown barangay "${values.barangay}"`);
+    } else if (!type) {
+      errors.push(`Row ${lineNo}: type must be Live Birth, Marriage or Death`);
+    } else if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) {
+      errors.push(`Row ${lineNo}: date must be in YYYY-MM-DD format`);
+    } else {
+      valid.push({ barangay: values.barangay, type, year: Number(m[1]), month: Number(m[2]) });
+    }
+  });
+  return { valid, errors };
+}
+
+function validateResidentRows(rows) {
+  const valid = [];
+  const errors = [];
+  rows.forEach(({ lineNo, values }) => {
+    const age = Number(values.age);
+    const emp = EMPLOYMENT_VALUES.find((v) => v.toLowerCase() === (values.employment || "").toLowerCase());
+    const vot = VOTING_VALUES.find((v) => v.toLowerCase() === (values.voting || "").toLowerCase());
+    if (!BARANGAY_NAMES.includes(values.barangay)) {
+      errors.push(`Row ${lineNo}: unknown barangay "${values.barangay}"`);
+    } else if (values.age === "" || !Number.isInteger(age) || age < 0 || age > 120) {
+      errors.push(`Row ${lineNo}: age must be a whole number from 0 to 120`);
+    } else if (!emp) {
+      errors.push(`Row ${lineNo}: employment must be one of ${EMPLOYMENT_VALUES.join(", ")}`);
+    } else if (!vot) {
+      errors.push(`Row ${lineNo}: voting must be one of ${VOTING_VALUES.join(", ")}`);
+    } else {
+      valid.push({ barangay: values.barangay, age, employment: emp, voting: vot });
+    }
+  });
+  return { valid, errors };
+}
+
+/* Civil counts per barangay for one year, from imported records. */
+function civilFromImports(records, year) {
+  const base = Object.fromEntries(BARANGAY_NAMES.map((n) => [n, { birth: 0, marriage: 0, death: 0 }]));
+  records.forEach((r) => {
+    if (r.year !== Number(year) || !base[r.barangay]) return;
+    if (r.type === "Live Birth") base[r.barangay].birth++;
+    else if (r.type === "Marriage") base[r.barangay].marriage++;
+    else base[r.barangay].death++;
+  });
+  return base;
+}
+
+/* Monthly live birth and death counts for one year, from imported records. */
+function monthlyFromImports(records, year) {
+  const months = MONTH_LABELS.map((label) => ({ label, birth: 0, death: 0 }));
+  records.forEach((r) => {
+    if (r.year !== Number(year)) return;
+    const m = months[r.month - 1];
+    if (r.type === "Live Birth") m.birth++;
+    else if (r.type === "Death") m.death++;
+  });
+  return months;
 }
 
 /* ════════════════════════════════════
@@ -488,7 +686,7 @@ function TrendChart({ data, height = 190 }) {
   const plotW = Math.max(width - padL - padR, 1);
   const plotH = height - padT - padB;
 
-  const rawMax = Math.max(...data.flatMap((d) => [d.birth, d.death]));
+  const rawMax = Math.max(0, ...data.flatMap((d) => [d.birth, d.death]));
   const step = niceStep(rawMax / 4);
   const maxVal = step * 4;
   const ticks = [0, 1, 2, 3, 4].map((i) => i * step);
@@ -573,6 +771,138 @@ function DemographicDetail({ name, stats, onClose }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════
+   IMPORT DIALOG
+════════════════════════════════════ */
+
+function ImportDialog({ target, existingCount, onClose, onImport, onClear }) {
+  const cfg = IMPORT_TARGETS[target];
+  const [text, setText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function analyze(source) {
+    const parsed = parseCsvText(source);
+    if (parsed.rows.length === 0) {
+      setResult({ valid: [], errors: ["No data rows found. Paste CSV text or choose a file."] });
+      return;
+    }
+    const missing = cfg.required.filter((h) => !parsed.headers.includes(h));
+    if (missing.length > 0) {
+      setResult({ valid: [], errors: [`Missing column(s): ${missing.join(", ")}`] });
+      return;
+    }
+    setResult(cfg.validate(parsed.rows));
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const content = await file.text();
+      setFileName(file.name);
+      setText(content);
+      analyze(content);
+    } catch (err) {
+      console.error("File read failed:", err);
+      setResult({ valid: [], errors: ["The file could not be read."] });
+    }
+  }
+
+  function handleTextChange(e) {
+    setText(e.target.value);
+    setFileName("");
+    analyze(e.target.value);
+  }
+
+  const validCount = result?.valid.length ?? 0;
+  const errorCount = result?.errors.length ?? 0;
+
+  return (
+    <div className="import-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        className="import-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-dialog-title"
+      >
+        <div className="import-dialog__header">
+          <div>
+            <h2 id="import-dialog-title">{cfg.title}</h2>
+            <p className="import-dialog__desc">{cfg.description}</p>
+          </div>
+          <button className="link-btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="import-dialog__row">
+          <label className="btn-secondary import-file">
+            Choose CSV file
+            <input type="file" accept=".csv,text/csv" onChange={handleFile} className="import-file__input" />
+          </label>
+          <button className="link-btn" onClick={() => downloadCsv(cfg.template.join("\n"), cfg.filename)}>
+            Download template
+          </button>
+          {fileName && <span className="import-dialog__meta">{fileName}</span>}
+        </div>
+
+        <textarea
+          className="import-textarea"
+          value={text}
+          onChange={handleTextChange}
+          placeholder={cfg.template.join("\n")}
+          spellCheck={false}
+          aria-label="CSV content"
+        />
+
+        {result && (
+          <div>
+            <p className={`import-summary ${validCount > 0 ? "import-summary--ok" : "import-summary--bad"}`}>
+              {validCount.toLocaleString()} valid record(s), {errorCount.toLocaleString()} skipped
+            </p>
+            {errorCount > 0 && (
+              <ul className="import-errors">
+                {result.errors.slice(0, 5).map((err) => (
+                  <li key={err}>{err}</li>
+                ))}
+                {errorCount > 5 && <li>+{errorCount - 5} more</li>}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className="import-actions">
+          {existingCount > 0 && (
+            <button className="link-btn" onClick={onClear}>
+              Clear imported {cfg.label} ({existingCount.toLocaleString()})
+            </button>
+          )}
+          <button className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            disabled={validCount === 0}
+            onClick={() => onImport(result.valid)}
+          >
+            Import {validCount > 0 ? validCount.toLocaleString() : ""} record(s)
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -803,18 +1133,24 @@ const BarangayMap = forwardRef(function BarangayMap({ items, activeBarangay, onS
 
 export default function Heatmaps() {
   const [viewMode, setViewMode] = useState(VIEW_CIVIL);
+  const [dataSource, setDataSource] = useState(SOURCE_DEMO);
   const [certType, setCertType] = useState("All Certificates");
   const [year, setYear] = useState("2026");
   const [activeBarangay, setActiveBarangay] = useState(null);
   const [showLateReg, setShowLateReg] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const mapControlRef = useRef(null);
 
   const [demoType, setDemoType] = useState("total");
   const [ageGroup, setAgeGroup] = useState("all");
   const [employment, setEmployment] = useState("all");
   const [voting, setVoting] = useState("all");
+
+  // Real data: residents fetched from the service, plus anything imported in this session.
   const [residentRows, setResidentRows] = useState([]);
   const [residentStatus, setResidentStatus] = useState("idle");
+  const [importedCivil, setImportedCivil] = useState([]);
+  const [importedResidents, setImportedResidents] = useState([]);
 
   const [cbmsBarangayFilter, setCbmsBarangayFilter] = useState("Follow Map Selection");
   const [cbmsIdFilter, setCbmsIdFilter] = useState("all");
@@ -823,8 +1159,10 @@ export default function Heatmaps() {
   const [cbmsFourPsOnly, setCbmsFourPsOnly] = useState(false);
 
   const isDemo = viewMode === VIEW_DEMOGRAPHICS;
-  // "idle" counts as loading: the fetch starts in an effect right after the first demographics render.
-  const isDemoLoading = isDemo && (residentStatus === "loading" || residentStatus === "idle");
+  const isReal = dataSource === SOURCE_REAL;
+  // "idle" counts as loading: the fetch starts in an effect right after real demographics is selected.
+  const isDemoLoading = isDemo && isReal && (residentStatus === "loading" || residentStatus === "idle");
+  const importTarget = isDemo ? "demographics" : "civil";
 
   const loadResidents = useCallback(async () => {
     setResidentStatus("loading");
@@ -844,28 +1182,31 @@ export default function Heatmaps() {
   }, []);
 
   const refreshHeatmap = useCallback(() => {
-    return isDemo ? loadResidents() : Promise.resolve();
-  }, [isDemo, loadResidents]);
+    return isDemo && isReal ? loadResidents() : Promise.resolve();
+  }, [isDemo, isReal, loadResidents]);
 
   useRegisterRefresh(refreshHeatmap);
 
   useEffect(() => {
-    if (isDemo && residentStatus === "idle") {
+    if (isDemo && isReal && residentStatus === "idle") {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- initial resident data load
       loadResidents();
     }
-  }, [isDemo, residentStatus, loadResidents]);
+  }, [isDemo, isReal, residentStatus, loadResidents]);
 
+  /* ── Civil registry base counts (demo or real) ── */
   const barangayData = useMemo(() => {
     const mult = YEAR_MULTIPLIERS[year] ?? 1;
+    const realCounts = isReal ? civilFromImports(importedCivil, year) : null;
     return RAW_BARANGAY_DATA.map((b) => {
-      const birth = Math.round(b.birth * mult);
-      const marriage = Math.round(b.marriage * mult);
-      const death = Math.round(b.death * mult);
+      const src = realCounts ? realCounts[b.name] : null;
+      const birth = src ? src.birth : Math.round(b.birth * mult);
+      const marriage = src ? src.marriage : Math.round(b.marriage * mult);
+      const death = src ? src.death : Math.round(b.death * mult);
       const total = birth + marriage + death;
       return { ...b, birth, marriage, death, total, hasRecords: total > 0 };
     });
-  }, [year]);
+  }, [year, isReal, importedCivil]);
 
   const sorted = useMemo(
     () => [...barangayData].sort((a, b) => metricValue(b, certType) - metricValue(a, certType)),
@@ -889,15 +1230,22 @@ export default function Heatmaps() {
   );
 
   const trendMonths = useMemo(() => {
+    if (isReal) return monthlyFromImports(importedCivil, year);
     const mult = YEAR_MULTIPLIERS[year] ?? 1;
     return TREND_MONTHS_BASE.map((m) => ({
       label: m.label,
       birth: Math.round(m.birth * mult),
       death: Math.round(m.death * mult),
     }));
-  }, [year]);
+  }, [year, isReal, importedCivil]);
 
-  const classified = useMemo(() => prepareResidents(residentRows, BARANGAY_NAMES), [residentRows]);
+  /* ── Resident data (demo or real) through one shared pipeline ── */
+  const residentSource = useMemo(
+    () => (isReal ? [...residentRows, ...importedResidents] : DEMO_RESIDENTS),
+    [isReal, residentRows, importedResidents]
+  );
+
+  const classified = useMemo(() => prepareResidents(residentSource, BARANGAY_NAMES), [residentSource]);
 
   const allStatsByBarangay = useMemo(
     () => aggregateByBarangay(classified.records, BARANGAY_NAMES),
@@ -1035,7 +1383,7 @@ export default function Heatmaps() {
   const handleSelectBarangay = useCallback(
     (name) => {
       if (isDemo) {
-        if (residentStatus !== "ready") return;
+        if (isDemoLoading) return;
         if (!allStatsByBarangay[name].total) {
           pushToast({
             title: "No resident records",
@@ -1050,7 +1398,7 @@ export default function Heatmaps() {
         if (!b || !b.hasRecords) {
           pushToast({
             title: "No records yet",
-            message: `${name} has no submitted civil registry records for ${year}.`,
+            message: `${name} has no records for ${year}.`,
             success: false,
             duration: 3500,
           });
@@ -1059,8 +1407,45 @@ export default function Heatmaps() {
       }
       setActiveBarangay((prev) => (prev === name ? null : name));
     },
-    [isDemo, residentStatus, allStatsByBarangay, barangayData, year]
+    [isDemo, isDemoLoading, allStatsByBarangay, barangayData, year]
   );
+
+  function changeSource(next) {
+    setDataSource(next);
+    setActiveBarangay(null);
+  }
+
+  function handleImport(records) {
+    if (importTarget === "demographics") {
+      setImportedResidents((prev) => [...prev, ...records]);
+    } else {
+      setImportedCivil((prev) => [...prev, ...records]);
+    }
+    setDataSource(SOURCE_REAL);
+    setActiveBarangay(null);
+    setImportOpen(false);
+    pushToast({
+      title: "Records imported",
+      message: `${records.length.toLocaleString()} ${IMPORT_TARGETS[importTarget].label} added. Showing real data.`,
+      success: true,
+      duration: 3000,
+    });
+  }
+
+  function handleClearImported() {
+    if (importTarget === "demographics") {
+      setImportedResidents([]);
+    } else {
+      setImportedCivil([]);
+    }
+    setActiveBarangay(null);
+    pushToast({
+      title: "Imported records cleared",
+      message: `All imported ${IMPORT_TARGETS[importTarget].label} were removed.`,
+      success: true,
+      duration: 2500,
+    });
+  }
 
   function handleExport() {
     try {
@@ -1072,9 +1457,15 @@ export default function Heatmaps() {
         b.marriage,
         b.death,
         b.total,
-        `${((b.total / totals.all) * 100).toFixed(2)}%`,
+        `${totals.all ? ((b.total / totals.all) * 100).toFixed(2) : "0.00"}%`,
       ]);
-      const meta = [`Certificate Type,${certType}`, `Year,${year}`, `Generated,${new Date().toLocaleString()}`, ""];
+      const meta = [
+        `Data Source,${isReal ? "Real" : "Demo"}`,
+        `Certificate Type,${certType}`,
+        `Year,${year}`,
+        `Generated,${new Date().toLocaleString()}`,
+        "",
+      ];
       const csv = [...meta, header.join(","), ...rows.map((r) => r.join(","))].join("\n");
 
       const filename = `heatmaps-report-${year}-${certType.replace(/\s+/g, "_")}.csv`;
@@ -1098,7 +1489,7 @@ export default function Heatmaps() {
 
   function handleExportDemographics() {
     try {
-      if (residentStatus !== "ready" || classified.records.length === 0) {
+      if (isDemoLoading || classified.records.length === 0) {
         pushToast({
           title: "Nothing to export",
           message: "No resident records are available to export.",
@@ -1114,6 +1505,7 @@ export default function Heatmaps() {
         ...DEMO_STATS.map((s) => r.stats[s.key]),
       ]);
       const meta = [
+        `Data Source,${isReal ? "Real" : "Demo"}`,
         `Demographic Type,${demoTypeLabel}`,
         `Age Group,${AGE_GROUPS.find((f) => f.value === ageGroup).label}`,
         `Employment,${EMPLOYMENT_FILTERS.find((f) => f.value === employment).label}`,
@@ -1226,6 +1618,7 @@ export default function Heatmaps() {
 
   const mapTitle = isDemo ? demoTypeLabel : metricLabel(certType);
   const legendScale = isDemo ? demoScale : HEAT_SCALE;
+  const sourceLabel = isReal ? "Real data" : "Demo data";
 
   let legendHint;
   if (isDemo) {
@@ -1241,17 +1634,22 @@ export default function Heatmaps() {
     }
   } else {
     legendHint = selectedBarangay
-      ? `${selectedBarangay.name}: ${selectedBarangay.birth} birth, ${selectedBarangay.marriage} marriage, ${selectedBarangay.death} death, ${selectedBarangay.total} total (${((selectedBarangay.total / totals.all) * 100).toFixed(1)}% of citywide). Click again to clear.`
+      ? `${selectedBarangay.name}: ${selectedBarangay.birth} birth, ${selectedBarangay.marriage} marriage, ${selectedBarangay.death} death, ${selectedBarangay.total} total (${totals.all ? ((selectedBarangay.total / totals.all) * 100).toFixed(1) : "0.0"}% of citywide). Click again to clear.`
       : "Click a barangay on the map to highlight it in the table and see its breakdown here.";
   }
 
-  // The skeleton already communicates "loading", so the banner only shows for errors and the empty state.
+  // Loading shows through the skeleton. The banner covers errors and empty real-data views.
+  const viewHasData = isDemo ? classified.records.length > 0 : !isReal || importedCivil.length > 0;
   let demoNotice = null;
-  if (isDemo && !isDemoLoading) {
-    if (residentStatus === "error") {
+  if (!isDemoLoading) {
+    if (isDemo && isReal && residentStatus === "error") {
       demoNotice = { tone: "error", text: "Resident records could not be loaded.", retry: true };
-    } else if (classified.records.length === 0) {
-      demoNotice = { tone: "info", text: "No resident records are available for the Heatmap yet." };
+    } else if (isReal && !viewHasData) {
+      demoNotice = {
+        tone: "info",
+        text: `No real ${IMPORT_TARGETS[importTarget].label} yet. Import a CSV file to populate this view.`,
+        action: "Import data",
+      };
     }
   }
 
@@ -1282,6 +1680,24 @@ export default function Heatmaps() {
                 onClick={() => setViewMode(VIEW_DEMOGRAPHICS)}
               >
                 Demographics
+              </button>
+            </div>
+          </div>
+
+          <div className="filter">
+            <span>Data Source</span>
+            <div className="toggle-row">
+              <button
+                className={`toggle-chip${!isReal ? " toggle-chip--active" : ""}`}
+                onClick={() => changeSource(SOURCE_DEMO)}
+              >
+                Demo
+              </button>
+              <button
+                className={`toggle-chip${isReal ? " toggle-chip--active" : ""}`}
+                onClick={() => changeSource(SOURCE_REAL)}
+              >
+                Real
               </button>
             </div>
           </div>
@@ -1369,11 +1785,14 @@ export default function Heatmaps() {
 
               <div className="filter">
                 <span>Date Range</span>
-                <div className="filter__range">Jan 1, {year} – May 30, {year}</div>
+                <div className="filter__range">Jan 1, {year} – {isReal ? "Dec 31" : "May 30"}, {year}</div>
               </div>
             </>
           )}
 
+          <button className="btn-secondary" onClick={() => setImportOpen(true)}>
+            <ImportIcon /> Import Data
+          </button>
           <button className="btn-primary" onClick={isDemo ? handleExportDemographics : handleExport}>
             <ExportIcon /> Export Report
           </button>
@@ -1387,8 +1806,8 @@ export default function Heatmaps() {
               <h2>{mapTitle} per Barangay</h2>
               <p className="card__subtitle">
                 {isDemo
-                  ? "San Carlos City, Negros Occidental (Resident Profiling)"
-                  : `San Carlos City, Negros Occidental (${year})`}
+                  ? `San Carlos City, Negros Occidental (Resident Profiling) · ${sourceLabel}`
+                  : `San Carlos City, Negros Occidental (${year}) · ${sourceLabel}`}
               </p>
             </div>
             <div className="zoom-controls">
@@ -1414,6 +1833,11 @@ export default function Heatmaps() {
               {demoNotice.retry && (
                 <button className="link-btn" onClick={loadResidents}>
                   Retry
+                </button>
+              )}
+              {demoNotice.action && (
+                <button className="link-btn" onClick={() => setImportOpen(true)}>
+                  {demoNotice.action}
                 </button>
               )}
             </div>
@@ -1615,7 +2039,7 @@ export default function Heatmaps() {
                   icon={<BirthIcon />}
                   label="Live Birth Records"
                   value={totals.birth}
-                  sub={`${((totals.birth / totals.all) * 100).toFixed(2)}% of total`}
+                  sub={`${totals.all ? ((totals.birth / totals.all) * 100).toFixed(2) : "0.00"}% of total`}
                   active={certType === "Live Birth"}
                   dim={certType !== "All Certificates" && certType !== "Live Birth"}
                 />
@@ -1624,7 +2048,7 @@ export default function Heatmaps() {
                   icon={<MarriageIcon />}
                   label="Marriage Records"
                   value={totals.marriage}
-                  sub={`${((totals.marriage / totals.all) * 100).toFixed(2)}% of total`}
+                  sub={`${totals.all ? ((totals.marriage / totals.all) * 100).toFixed(2) : "0.00"}% of total`}
                   active={certType === "Marriage"}
                   dim={certType !== "All Certificates" && certType !== "Marriage"}
                 />
@@ -1633,7 +2057,7 @@ export default function Heatmaps() {
                   icon={<DeathIcon />}
                   label="Death Records"
                   value={totals.death}
-                  sub={`${((totals.death / totals.all) * 100).toFixed(2)}% of total`}
+                  sub={`${totals.all ? ((totals.death / totals.all) * 100).toFixed(2) : "0.00"}% of total`}
                   active={certType === "Death"}
                   dim={certType !== "All Certificates" && certType !== "Death"}
                 />
@@ -1675,7 +2099,7 @@ export default function Heatmaps() {
                               className="pct-pill"
                               style={{ background: heatColor(b.total), color: heatTextColor(b.total) }}
                             >
-                              {((b.total / totals.all) * 100).toFixed(2)}%
+                              {totals.all ? ((b.total / totals.all) * 100).toFixed(2) : "0.00"}%
                             </span>
                           </td>
                           <td>
@@ -1883,17 +2307,17 @@ export default function Heatmaps() {
               <li className={certType === "Live Birth" ? "donut-legend__item--active" : ""}>
                 <i style={{ background: "#16a34a" }} />
                 Live Birth <b>{totals.birth.toLocaleString()}</b>
-                <span>{((totals.birth / totals.all) * 100).toFixed(2)}%</span>
+                <span>{totals.all ? ((totals.birth / totals.all) * 100).toFixed(2) : "0.00"}%</span>
               </li>
               <li className={certType === "Marriage" ? "donut-legend__item--active" : ""}>
                 <i style={{ background: "#f59e0b" }} />
                 Marriage <b>{totals.marriage.toLocaleString()}</b>
-                <span>{((totals.marriage / totals.all) * 100).toFixed(2)}%</span>
+                <span>{totals.all ? ((totals.marriage / totals.all) * 100).toFixed(2) : "0.00"}%</span>
               </li>
               <li className={certType === "Death" ? "donut-legend__item--active" : ""}>
                 <i style={{ background: "#e11d48" }} />
                 Death <b>{totals.death.toLocaleString()}</b>
-                <span>{((totals.death / totals.all) * 100).toFixed(2)}%</span>
+                <span>{totals.all ? ((totals.death / totals.all) * 100).toFixed(2) : "0.00"}%</span>
               </li>
             </ul>
           </div>
@@ -1940,7 +2364,8 @@ export default function Heatmaps() {
           </div>
           <p>
             The Heatmaps tool shows the total number of civil registry records — Live Birth, Marriage, and Death —
-            per barangay on a single view. Click a barangay to see its detailed breakdown and analytics.
+            per barangay on a single view. Click a barangay to see its detailed breakdown and analytics. Switch
+            between Demo and Real data, and use Import Data to load real records from a CSV file.
           </p>
           <div className="about-card__note">
             <NoteIcon />
@@ -1981,6 +2406,16 @@ export default function Heatmaps() {
           )}
         </div>
       </section>
+
+      {importOpen && (
+        <ImportDialog
+          target={importTarget}
+          existingCount={isDemo ? importedResidents.length : importedCivil.length}
+          onClose={() => setImportOpen(false)}
+          onImport={handleImport}
+          onClear={handleClearImported}
+        />
+      )}
     </div>
   );
 }
@@ -1994,6 +2429,19 @@ function ExportIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
       <path
         d="M12 3v12m0-12 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+function ImportIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M12 15V3m0 12-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
