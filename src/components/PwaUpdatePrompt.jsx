@@ -14,14 +14,14 @@ export default function PwaUpdatePrompt() {
   } = useRegisterSW({
     onRegisteredSW(_url, reg) {
       regRef.current = reg ?? null;
-      reg?.update(); // check right away when the app opens
+      reg?.update(); // check when the app opens
     },
     onRegisterError(error) {
       console.error("[PWA] Service worker registration failed:", error);
     },
   });
 
-  // Check for updates periodically and when the user returns to the app
+  // Only CHECKS for updates. It never applies one.
   useEffect(() => {
     const check = () => {
       if (!document.hidden) regRef.current?.update();
@@ -34,6 +34,7 @@ export default function PwaUpdatePrompt() {
     };
   }, []);
 
+  // Banner shows only when a new version is waiting. Nothing reloads by itself.
   if (!needRefresh || dismissed) return null;
 
   return (

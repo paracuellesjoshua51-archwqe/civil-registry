@@ -1,20 +1,34 @@
-export default function LoadingScreen({ waking = false }) {
+const NAV_ITEMS = 7;
+const CARDS = 4;
+
+const block = "animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700";
+
+export default function LoadingScreen() {
   return (
-    <div style={{
-      display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center",
-      height: "100vh", gap: "12px", color: "#888",
-    }}>
-      <div style={{
-        width: "32px", height: "32px",
-        border: "3px solid #e5e7eb",
-        borderTop: "3px solid #6366f1",
-        borderRadius: "50%",
-        animation: "app-loading-spin 0.8s linear infinite",
-      }} />
-      <p style={{ margin: 0 }}>
-        {waking ? "Waking up the server, this can take up to a minute…" : "Loading..."}
-      </p>
+    <div
+      aria-busy="true"
+      aria-label="Loading"
+      className="flex min-h-screen flex-col bg-gray-100 dark:bg-gray-950"
+    >
+      <header className="h-52px bg-[#1e3a6e] dark:bg-[#14284d]" />
+
+      <div className="flex flex-1">
+        <aside className="hidden w-56 flex-col gap-2.5 border-r border-gray-200 p-3 dark:border-gray-800 md:flex">
+          {Array.from({ length: NAV_ITEMS }, (_, i) => (
+            <div key={i} className={`${block} h-8`} />
+          ))}
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col gap-5 p-6">
+          <div className={`${block} h-7 w-1/3`} />
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4">
+            {Array.from({ length: CARDS }, (_, i) => (
+              <div key={i} className={`${block} h-24`} />
+            ))}
+          </div>
+          <div className={`${block} h-72`} />
+        </main>
+      </div>
     </div>
   );
 }
