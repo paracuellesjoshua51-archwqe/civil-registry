@@ -20,7 +20,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Live: berde nga pulse */
+
 .live-indicator--live .live-indicator__dot {
   background: #22c55e;
   animation: live-indicator-pulse 1.8s infinite;
