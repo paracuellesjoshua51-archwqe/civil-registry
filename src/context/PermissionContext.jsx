@@ -86,7 +86,6 @@ const PermissionContext = createContext({
   can_manage_personnel: false,
   authenticated:        false,
   loading:              true,
-  waking:               false,
   error:                null,
   hasAccess:            () => false,
   refresh:              async () => false,
@@ -112,7 +111,6 @@ export function PermissionProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState(null);
-  const [waking,        setWaking]        = useState(false);
 
   const inFlight = useRef(null);
   const hasLoadedOnce = useRef(false);
@@ -180,9 +178,6 @@ export function PermissionProvider({ children }) {
       const firstLoad = !hasLoadedOnce.current;
       if (firstLoad) setLoading(true);
       setError(null);
-
-      let wakingTimer = null;
-      if (firstLoad) wakingTimer = setTimeout(() => setWaking(true), 2000);
 
       // Network or server failure: use the cache only on first load.
       const fallBack = (networkFailure) => {
@@ -276,8 +271,6 @@ export function PermissionProvider({ children }) {
         return fallBack(true);
       } finally {
         hasLoadedOnce.current = true;
-        if (wakingTimer) clearTimeout(wakingTimer);
-        setWaking(false);
         if (firstLoad) setLoading(false);
       }
     };
@@ -330,14 +323,13 @@ export function PermissionProvider({ children }) {
     can_manage_personnel: isAdmin,
     authenticated,
     loading,
-    waking,
     error,
     hasAccess,
     refresh,
     restoreFromCache,
     clearPerms,
     logout,
-  }), [role, permissions, isAdmin, authenticated, loading, waking, error, hasAccess, refresh, restoreFromCache, clearPerms, logout]);
+  }), [role, permissions, isAdmin, authenticated, loading, error, hasAccess, refresh, restoreFromCache, clearPerms, logout]);
 
   return (
     <PermissionContext.Provider value={value}>

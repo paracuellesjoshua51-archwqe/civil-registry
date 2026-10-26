@@ -1,6 +1,5 @@
 import { Navigate } from "react-router-dom";
 import { usePermissions } from "../context/PermissionContext";
-import LoadingScreen from "./LoadingScreen";
 import useHeartbeat from "../hooks/useHeartbeat";
 
 // Gimarkahan sa Login kung nakalogin ang user niini nga launch/window.
@@ -18,11 +17,11 @@ function isUnlockedThisLaunch() {
 // Renders children only when the user logged in during THIS launch and the
 // session is valid (online with a server session, or offline from cache).
 export default function ProtectedRoute({ module, adminOnly = false, children }) {
-  const { authenticated, hasAccess, is_admin, loading, waking } = usePermissions();
+  const { authenticated, hasAccess, is_admin, loading } = usePermissions();
 
   useHeartbeat(authenticated);
 
-  if (loading) return <LoadingScreen waking={waking} />;
+  if (loading) return null;
 
   // Ang cached session dili igo. Kinahanglan og login niini nga launch.
   if (!authenticated || !isUnlockedThisLaunch()) {

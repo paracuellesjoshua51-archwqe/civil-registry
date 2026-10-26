@@ -15,9 +15,8 @@ import HomePreloader from "./routes/HomePreloader";
 import ToastContainer from "./components/ToastContainer";
 import GlobalRealtime from "./components/GlobalRealtime";
 import ErrorBoundary from "./components/ErrorBoundary";
-import PwaUpdatePrompt from "./components/PwaUpdatePrompt";
 
-// Home is lazy-loaded (not statically imported) so it gets its own chunk.
+// Home is lazy-loaded so it gets its own chunk.
 // HomePreloader uses the same dynamic import to warm it up during idle time.
 const Home = lazy(() => import("./pages/Home/Home"));
 
@@ -43,30 +42,21 @@ const HomeFallback = () => (
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    {/* ErrorBoundary shows a readable message if a render crashes, instead of a blank page. */}
     <ErrorBoundary>
-      {/* Router wraps everything so Navigate and useNavigate work. */}
       <Router>
         <ToastContainer />
-        {/* Shows the "new version available" banner and registers the service worker. */}
-        <PwaUpdatePrompt />
         {/* One realtime listener for the whole app. Pages subscribe via useDataChanged. */}
         <GlobalRealtime />
         <PermissionProvider>
           <OfflineProvider>
-            {/* Global refresh: lives above the routes so every registered page loader
-                survives navigation between modules. */}
             <RefreshProvider>
               <Routes>
-                {/* "/" goes to the dashboard. ProtectedRoute decides: a valid
-                    session (online or cached) stays there, otherwise it goes to login. */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/login" element={<><Login /><HomePreloader /></>} />
                 <Route path="/access-denied" element={<AccessDenied />} />
 
                 <Route
                   element={
-                    // Suspense shows a fallback while the lazy Home chunk loads.
                     <Suspense fallback={<HomeFallback />}>
                       <ProtectedRoute module="dashboard">
                         <Home />

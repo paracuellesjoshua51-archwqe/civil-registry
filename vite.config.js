@@ -27,8 +27,8 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 800,
-    // All CSS goes into one file, so no lazy CSS chunk (like bulkDelete-*.css)
-    // can fail to load offline or after a stale service worker cache.
+    // All CSS goes into one file, so no lazy CSS chunk can fail to load
+    // offline or after a stale service worker cache.
     cssCodeSplit: false,
     rollupOptions: {
       output: {
@@ -39,18 +39,22 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-VitePWA({
-  registerType: "prompt",
-  manifest: false,
-  includeAssets: ["scc.png", "lcr.jpg", "icons/pwa-192.png", "icons/pwa-512.png", "offline.html"],
-  workbox: {
-    navigateFallback: "/index.html",
-    navigateFallbackDenylist: [/^\/api\//],
-    globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
-    maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-    cleanupOutdatedCaches: true, // remove old app files after an update
-    clientsClaim: true,          // the new version takes control of open pages right away
-  },
-}),
+    VitePWA({
+      // Automatic update: the new service worker activates right away and the
+      // page reloads by itself. No prompt, no manual unregister or cache clear.
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+      manifest: false, // public/manifest.webmanifest is used instead
+      includeAssets: ["scc.png", "lcr.jpg", "icons/pwa-192.png", "icons/pwa-512.png", "offline.html"],
+      workbox: {
+        skipWaiting: true,           // install the new version without waiting
+        clientsClaim: true,          // take control of open pages immediately
+        cleanupOutdatedCaches: true, // delete old app files after an update
+        navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/api\//],
+        globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+      },
+    }),
   ],
 });

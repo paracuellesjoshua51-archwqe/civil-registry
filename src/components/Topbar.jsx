@@ -1,5 +1,4 @@
 import React, { memo, useEffect, useState } from "react";
-import { hardRefresh } from "../utils/hardRefresh";
 import "./Topbar.css";
 
 const dateFmt = new Intl.DateTimeFormat("en-PH", {
@@ -72,10 +71,13 @@ const RefreshButton = memo(function RefreshButton() {
   const handleClick = () => {
     if (reloading) return;
     setReloading(true);
-    // Full browser reload (same as F5). Returns false only if the user cancels
-    // the unsaved-changes prompt, so reset the spinner in that case.
-    const started = hardRefresh();
-    if (started === false) setReloading(false);
+    // Flag para ma-show ang refresh-skeleton.js human sa reload
+    try {
+      sessionStorage.setItem("cr:hard-refresh", "1");
+    } catch {
+      /* sessionStorage unavailable: reload lang gihapon */
+    }
+    window.location.reload();
   };
 
   const title = reloading
