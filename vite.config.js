@@ -39,18 +39,18 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    VitePWA({
-      registerType: "prompt", // PwaUpdatePrompt shows the update banner
-      manifest: false,        // public/manifest.webmanifest is used instead
-      includeAssets: ["scc.png", "lcr.jpg", "icons/pwa-192.png", "icons/pwa-512.png", "offline.html"],
-      workbox: {
-        // Lets a reload of /dashboard work offline. API calls are never served from this fallback.
-        navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
-        globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
-        // Default is 2 MB. Raise it so the larger vendor chunks are precached for offline use.
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-      },
-    }),
+VitePWA({
+  registerType: "prompt",
+  manifest: false,
+  includeAssets: ["scc.png", "lcr.jpg", "icons/pwa-192.png", "icons/pwa-512.png", "offline.html"],
+  workbox: {
+    navigateFallback: "/index.html",
+    navigateFallbackDenylist: [/^\/api\//],
+    globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
+    maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+    cleanupOutdatedCaches: true, // remove old app files after an update
+    clientsClaim: true,          // the new version takes control of open pages right away
+  },
+}),
   ],
 });
