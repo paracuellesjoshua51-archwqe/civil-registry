@@ -1,11 +1,7 @@
 {
   "name": "civil-registry",
   "private": true,
-<<<<<<< HEAD
   "version": "1.0.70",
-=======
-  "version": "1.0.49",
->>>>>>> 25489e22c51e4de80e08b49542ccb09288e6969d
   "type": "module",
   "scripts": {
     "dev": "vite",
