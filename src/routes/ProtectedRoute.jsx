@@ -3,33 +3,34 @@ import { usePermissions } from "../context/PermissionContext";
 import LoadingScreen from "./LoadingScreen";
 import useHeartbeat from "../hooks/useHeartbeat";
 
+// Gimarkahan sa Login kung nakalogin ang user niini nga launch/window.
+// Mawala kini kung isirado ang window, mao nga ang reopen mo-require og login.
+const UNLOCK_KEY = "lcr_unlocked_this_launch";
 
+function isUnlockedThisLaunch() {
+  try {
+    return sessionStorage.getItem(UNLOCK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// Renders children only when the user logged in during THIS launch and the
+// session is valid (online with a server session, or offline from cache).
 export default function ProtectedRoute({ module, adminOnly = false, children }) {
-  const { hasAccess, is_admin, loading, waking } = usePermissions();
+  const { authenticated, hasAccess, is_admin, loading, waking } = usePermissions();
 
-  // Call heartbeat at the TOP of the component, before any conditional return.
-  // hasAccess("dashboard") is true only when the server confirmed this session is logged in.
-  useHeartbeat(hasAccess("dashboard"));
+  useHeartbeat(authenticated);
 
-  // 1. Launch-time session check only. After login, loading is already false,
-  //    so this screen is not shown again.
   if (loading) return <LoadingScreen waking={waking} />;
 
-  // 2. hasAccess("dashboard") is true only when the server confirmed this
-  //    session is logged in.
-  if (!hasAccess("dashboard")) {
-    return <Navigate to="/" replace />;
+  // Ang cached session dili igo. Kinahanglan og login niini nga launch.
+  if (!authenticated || !isUnlockedThisLaunch()) {
+    return <Navigate to="/login" replace />;
   }
 
-  // 3. Admin-only route guard
-  if (adminOnly && !is_admin) {
-    return <Navigate to="/access-denied" replace />;
-  }
-
-  // 4. Module permission guard
-  if (module && !hasAccess(module)) {
-    return <Navigate to="/access-denied" replace />;
-  }
+  if (adminOnly && !is_admin) return <Navigate to="/access-denied" replace />;
+  if (module && !hasAccess(module)) return <Navigate to="/access-denied" replace />;
 
   return children;
 }

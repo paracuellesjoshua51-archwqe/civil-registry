@@ -4,39 +4,18 @@ import { getAllowedEntities, setSyncScope } from "../offline/syncScope";
 
 const API = import.meta.env.VITE_API_BASE_URL || "";
 
-// Free-tier backends (e.g. Render) can take 50-90+ seconds to wake up
-// after idling. 45s covers a cold start; a warm server responds quickly.
+// Free-tier backends can take 50-90+ seconds to wake up. 45s covers a cold start.
 const FETCH_TIMEOUT_MS = 45000;
 
-// ── Offline support ─────────────────────────────────────────────────────────
-// Last known good session, kept on this device. The server cookie still
-// decides real access; this only keeps the UI usable while the server cannot
-// be reached. Nothing secret is stored (no password, no token).
+// Last known good session, kept on this device for offline use.
+// Nothing secret is stored (no password, no token).
 const SESSION_CACHE_KEY = "cr_session_cache_v1";
-const OFFLINE_GRACE_DAYS = 7;
 
-function readSessionCache() {
-  try {
-    const raw = localStorage.getItem(SESSION_CACHE_KEY);
-    if (!raw) return null;
-    const c = JSON.parse(raw);
-    if (Date.now() - (c.savedAt || 0) > OFFLINE_GRACE_DAYS * 86400000) {
-      localStorage.removeItem(SESSION_CACHE_KEY);
-      return null;
-    }
-    return c;
-  } catch {
-    return null;
-  }
-}
+// Set in sessionStorage after a real login on this tab. Cleared when the tab closes.
+const SESSION_FLAG = "crSessionActive";
 
-function writeSessionCache(c) {
-  try {
-    localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({ ...c, savedAt: Date.now() }));
-  } catch {
-    /* storage full or blocked */
-  }
-}
+// Offline access ends this long after the last successful online check.
+const SESSION_CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 function clearSessionCache() {
   try {
@@ -46,11 +25,66 @@ function clearSessionCache() {
   }
 }
 
+// Returns the cache only if it is well formed and not expired. Expired or
+// corrupt entries are deleted so they can never grant access.
+function readSessionCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(SESSION_CACHE_KEY) || "null");
+    if (!c || typeof c !== "object" || !c.savedAt) {
+      clearSessionCache();
+      return null;
+    }
+    if (Date.now() - c.savedAt > SESSION_CACHE_MAX_AGE_MS) {
+      clearSessionCache();
+      return null;
+    }
+    return c;
+  } catch {
+    clearSessionCache();
+    return null;
+  }
+}
+
+// Single writer for the offline session cache. Login.jsx uses this too.
+// eslint-disable-next-line react-refresh/only-export-components -- helper colocated with its provider
+export function saveSessionCache({ username, role, permissions, isAdmin }) {
+  try {
+    localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
+      username: username || null,
+      role: role || (isAdmin ? "Administrator" : "User"),
+      permissions: Array.isArray(permissions) ? permissions : [],
+      isAdmin: Boolean(isAdmin),
+      savedAt: Date.now(),
+    }));
+  } catch {
+    /* storage full or blocked */
+  }
+}
+
+// Call from Login.jsx after a successful login, before refresh().
+// eslint-disable-next-line react-refresh/only-export-components -- helper colocated with its provider
+export function markSessionActive() {
+  try {
+    sessionStorage.setItem(SESSION_FLAG, "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+function isSessionActive() {
+  try {
+    return sessionStorage.getItem(SESSION_FLAG) === "1";
+  } catch {
+    return false;
+  }
+}
+
 const PermissionContext = createContext({
   role:                 null,
   permissions:          [],
   is_admin:             false,
   can_manage_personnel: false,
+  authenticated:        false,
   loading:              true,
   waking:               false,
   error:                null,
@@ -65,8 +99,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
-    return res;
+    return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -84,16 +117,23 @@ export function PermissionProvider({ children }) {
   const inFlight = useRef(null);
   const hasLoadedOnce = useRef(false);
 
-  const clearPerms = useCallback(() => {
+  // Clears the in-memory session only. The saved offline cache is kept.
+  const resetSessionState = useCallback(() => {
     setRole(null);
     setPermissions([]);
     setIsAdmin(false);
     setAuthenticated(false);
-    setSyncScope(new Set()); // logged out: nothing may sync
-    clearSessionCache();
+    setSyncScope(new Set()); // nothing may sync while logged out
     sessionStorage.removeItem("username");
     sessionStorage.removeItem("isAuthenticated");
+    sessionStorage.removeItem(SESSION_FLAG);
   }, []);
+
+  // Full logout path: clears the in-memory session AND the offline cache.
+  const clearPerms = useCallback(() => {
+    resetSessionState();
+    clearSessionCache();
+  }, [resetSessionState]);
 
   const logout = useCallback(async () => {
     try {
@@ -110,26 +150,29 @@ export function PermissionProvider({ children }) {
     }
   }, [clearPerms]);
 
-  // Restores the saved session. Used when the server cannot be reached and
-  // by the offline login path. Returns true if a saved session was restored.
+  // Restores the session from the offline cache. Returns true ONLY when the
+  // cache exists, is not expired, and is well formed.
   const restoreFromCache = useCallback(() => {
     const c = readSessionCache();
     if (!c) return false;
-    const cachedPerms = Array.isArray(c.permissions) ? c.permissions : [];
-    const cachedAdmin = Boolean(c.isAdmin);
-    setRole(c.role);
-    setPermissions(cachedPerms);
-    setIsAdmin(cachedAdmin);
+
+    const perms = Array.isArray(c.permissions) ? c.permissions : [];
+    const admin = Boolean(c.isAdmin);
+
+    setRole(c.role || null);
+    setPermissions(perms);
+    setIsAdmin(admin);
     // Scope first, so the sync engine knows this login's modules before any UI.
-    setSyncScope(getAllowedEntities(cachedPerms, cachedAdmin));
+    setSyncScope(getAllowedEntities(perms, admin));
     setAuthenticated(true);
+
     if (c.username) sessionStorage.setItem("username", c.username);
     sessionStorage.setItem("isAuthenticated", "true");
+    sessionStorage.setItem(SESSION_FLAG, "1");
     return true;
   }, []);
 
-  // Confirms the session with the server. Resolves to true when the user is
-  // signed in, so callers can navigate without a full page reload.
+  // Confirms the session. Resolves to true only when the user may enter the app.
   const refresh = useCallback(() => {
     if (inFlight.current) return inFlight.current;
 
@@ -141,24 +184,27 @@ export function PermissionProvider({ children }) {
       let wakingTimer = null;
       if (firstLoad) wakingTimer = setTimeout(() => setWaking(true), 2000);
 
-      // The server could not confirm the session: on the first load, keep the
-      // user in with the saved session if there is one, otherwise log out.
-      const fallBackOrLogOut = () => {
-        if (firstLoad && restoreFromCache()) return true;
-        if (firstLoad) clearPerms();
+      // Network or server failure: use the cache only on first load.
+      const fallBack = (networkFailure) => {
+        if (firstLoad && (networkFailure || !navigator.onLine) && restoreFromCache()) return true;
+        if (firstLoad) resetSessionState();
         return false;
       };
 
       try {
-        // Browser already knows it is offline: skip the network wait.
-        if (!navigator.onLine && restoreFromCache()) return true;
+        // Browser is offline. The cache is the only proof of a session.
+        if (!navigator.onLine) {
+          if (restoreFromCache()) return true;
+          resetSessionState(); // no valid cache means no session
+          return false;
+        }
 
         const res = await fetchWithTimeout(`${API}/api/session`, {
           credentials: "include",
           headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
         });
 
-        // A real 401 means the session expired: log out and forget the cache.
+        // Real 401: the server session expired. Log out and forget the cache.
         if (res.status === 401) {
           clearPerms();
           return false;
@@ -167,12 +213,18 @@ export function PermissionProvider({ children }) {
         if (!res.ok) {
           console.warn("[Permissions] /api/session returned status", res.status);
           setError(`Server returned ${res.status}`);
-          return fallBackOrLogOut();
+          return fallBack(false);
         }
 
         const data = await res.json();
 
         if (data.authenticated || data.user) {
+          // Server has a session, but this tab never logged in: require login.
+          if (!isSessionActive()) {
+            resetSessionState();
+            return false;
+          }
+
           const userObj = data.user || {};
 
           const userAdmin =
@@ -187,38 +239,31 @@ export function PermissionProvider({ children }) {
                 ? data.permissions
                 : []),
           ];
-
           if (!perms.includes("dashboard")) perms.push("dashboard");
 
           const resolvedRole =
             userObj.role || data.role || (userAdmin ? "Administrator" : "User");
+          const uname = userObj.username || data.username || sessionStorage.getItem("username") || null;
 
-          // Scope the offline sync to this login's permissions BEFORE the
-          // UI renders, so nothing outside the user's modules is ever sent.
-          // setSyncScope ignores unchanged values, so repeated refreshes
-          // (e.g. coming back online) do not restart the sync.
           setSyncScope(getAllowedEntities(perms, userAdmin));
-
           setRole(resolvedRole);
           setPermissions(perms);
           setIsAdmin(userAdmin);
           setAuthenticated(true);
 
-          // Remember this session for offline reloads.
-          writeSessionCache({
+          saveSessionCache({
+            username: uname,
             role: resolvedRole,
             permissions: perms,
             isAdmin: userAdmin,
-            username: userObj.username || data.username || sessionStorage.getItem("username") || null,
           });
 
-          const uname = userObj.username || data.username;
           if (uname) sessionStorage.setItem("username", uname);
           sessionStorage.setItem("isAuthenticated", "true");
           return true;
         }
 
-        clearPerms();
+        resetSessionState();
         return false;
       } catch (e) {
         if (e.name === "AbortError") {
@@ -228,7 +273,7 @@ export function PermissionProvider({ children }) {
           console.error("[Permissions] /api/session failed:", e);
           setError("Could not reach the server.");
         }
-        return fallBackOrLogOut();
+        return fallBack(true);
       } finally {
         hasLoadedOnce.current = true;
         if (wakingTimer) clearTimeout(wakingTimer);
@@ -241,21 +286,19 @@ export function PermissionProvider({ children }) {
       inFlight.current = null;
     });
     return inFlight.current;
-  }, [clearPerms, restoreFromCache]);
+  }, [clearPerms, resetSessionState, restoreFromCache]);
 
-  // Initial session check on mount. Without this, "Loading..." never finishes.
+  // Initial session check on mount.
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Back/forward from the bfcache: don't reuse the old state, verify with the server.
-  // Back online: confirm with the server. A 401 here means the session
-  // really expired, so the user is sent to login.
+  // Back/forward from bfcache: re-verify, online or offline. refresh() decides
+  // from the server when online and from the valid cache when offline.
   useEffect(() => {
     const onPageShow = (e) => {
-      if (!e.persisted) return;        // true only when restored from bfcache
-      if (!navigator.onLine) return;   // offline mode: don't kick the user out
-     hasLoadedOnce.current = false;   // treat as first load: LoadingScreen + clearPerms if expired
+      if (!e.persisted) return;
+      hasLoadedOnce.current = false; // treat as first load
       refresh();
     };
     const onOnline = () => { refresh(); };
@@ -268,14 +311,16 @@ export function PermissionProvider({ children }) {
     };
   }, [refresh]);
 
+  // Nothing is accessible without an authenticated session, including admins.
   const hasAccess = useCallback(
     (mod) => {
+      if (!authenticated) return false;
+      if (mod === "dashboard") return true;
       if (isAdmin) return true;
       if (Array.isArray(permissions) && permissions.includes("*")) return true;
-      if (mod === "dashboard" && authenticated) return true;
       return Array.isArray(permissions) && permissions.includes(mod);
     },
-    [permissions, isAdmin, authenticated]
+    [authenticated, permissions, isAdmin]
   );
 
   const value = useMemo(() => ({
@@ -283,6 +328,7 @@ export function PermissionProvider({ children }) {
     permissions,
     is_admin: isAdmin,
     can_manage_personnel: isAdmin,
+    authenticated,
     loading,
     waking,
     error,
@@ -291,7 +337,7 @@ export function PermissionProvider({ children }) {
     restoreFromCache,
     clearPerms,
     logout,
-  }), [role, permissions, isAdmin, loading, waking, error, hasAccess, refresh, restoreFromCache, clearPerms, logout]);
+  }), [role, permissions, isAdmin, authenticated, loading, waking, error, hasAccess, refresh, restoreFromCache, clearPerms, logout]);
 
   return (
     <PermissionContext.Provider value={value}>

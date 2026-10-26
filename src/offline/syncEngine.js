@@ -51,7 +51,11 @@ const setState = (p) => { state = { ...state, ...p }; stateListeners.forEach((fn
 export const getSyncState = () => state;
 export const subscribeSyncState = (fn) => (stateListeners.add(fn), () => stateListeners.delete(fn));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const currentUser = () => { try { return sessionStorage.getItem('username'); } catch { return null; } };
+
+// The logged-in username for this tab. Null when nobody is logged in.
+const currentUser = () => {
+  try { return sessionStorage.getItem('username') || null; } catch { return null; }
+};
 
 // A queued change may point at a temporary document id ("offline-<opId>").
 // Swap in the real id saved when that document was created on the server.
@@ -97,6 +101,7 @@ async function replay(op) {
 //   paused / pausedEntities : modules that hit a server error and wait for retry
 //   skippedOtherLogin       : items queued by a different login (left untouched)
 // A network loss stops the whole run and returns { error }.
+// Never sends anything when no user is logged in.
 export async function runSync() {
   if (running || !isDbAvailable()) return null;
   running = true;
@@ -110,13 +115,15 @@ export async function runSync() {
   let serverError = null;
 
   try {
-    await recoverInterrupted();
     const me = currentUser();
+    if (!me) return null; // nobody logged in: queued items stay untouched
+
+    await recoverInterrupted();
 
     // Work this login may send (its own items, within its permissions).
     // Everything else stays queued, untouched.
     const scoped = (await listByStatus('pending')).filter((o) => isEntityAllowed(o.entity));
-    const queue = scoped.filter((o) => !o.username || !me || o.username === me);
+    const queue = scoped.filter((o) => !o.username || o.username === me);
     summary.skippedOtherLogin = scoped.length - queue.length;
     if (!queue.length) return summary;
 
@@ -217,6 +224,7 @@ export async function runSync() {
 
 // Re-queue only the failed and conflicting items this login may send, then sync.
 export async function retryAllFailed() {
+  if (!currentUser()) return null;
   const rows = [
     ...(await listByStatus('failed')),
     ...(await listByStatus('conflict')),

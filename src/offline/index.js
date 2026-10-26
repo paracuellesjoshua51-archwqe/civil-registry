@@ -6,7 +6,6 @@ export * from './syncEngine';
 export * from './conflictResolver';
 export * from './storagePersistence';
 export * from './fileStore';
-export * from './authCache';
 export * from './offlineRepository';
 
 // Ask the browser to keep offline data (IndexedDB, files) instead of evicting it

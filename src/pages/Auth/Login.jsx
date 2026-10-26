@@ -5,12 +5,30 @@ import axios from "axios";
 import "./Login.css";
 import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
 import { pushToast } from "../../services/toastService";
-import { usePermissions } from "../../context/PermissionContext";
-
+import { usePermissions, markSessionActive, saveSessionCache } from "../../context/PermissionContext";
 import bgImage from "../../assets/images/home.jpg";
 import loginLogo from "../../assets/images/scc.png";
 
 const API = import.meta.env.VITE_API_BASE_URL || "";
+
+// Same key as ProtectedRoute. Set only after a successful login in this launch.
+const UNLOCK_KEY = "lcr_unlocked_this_launch";
+
+function markUnlockedThisLaunch() {
+  try {
+    sessionStorage.setItem(UNLOCK_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+function isUnlockedThisLaunch() {
+  try {
+    return sessionStorage.getItem(UNLOCK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 const UserIcon = () => (
   <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
@@ -79,14 +97,17 @@ const Login = () => {
   const countdownRef = useRef(null);
 
   const navigate = useNavigate();
-  const { refresh, restoreFromCache } = usePermissions();
+  const { refresh, restoreFromCache, authenticated, loading: sessionLoading } = usePermissions();
 
-  // Already signed in this browser session -> go straight to dashboard
+  // Only go to the dashboard when the session is valid AND the user logged in
+  // during this launch. A cached session alone (offline restore) is not enough,
+  // so reopening the app while offline shows the login page.
   useEffect(() => {
-    if (sessionStorage.getItem("isAuthenticated") === "true") {
+    if (sessionLoading || !authenticated) return;
+    if (isUnlockedThisLaunch()) {
       navigate("/dashboard", { replace: true });
     }
-  }, [navigate]);
+  }, [sessionLoading, authenticated, navigate]);
 
   // Lock countdown timer
   useEffect(() => {
@@ -135,8 +156,9 @@ const Login = () => {
 
         pushToast({ title: "Login successful!", message: msg, success: true, duration: 2000 });
 
-        // Confirm the session in-app, then go straight to the dashboard.
-        // No full page reload, so no extra login screen or loading bar.
+        // Mark this tab as logged in, then confirm the session with the server.
+        markSessionActive();
+        markUnlockedThisLaunch();
         const signedIn = await refresh();
         if (signedIn) {
           navigate("/dashboard", { replace: true });
@@ -175,15 +197,13 @@ const Login = () => {
           const offlineIsAdmin =
             Boolean(u.is_admin) || String(u.role || "").toLowerCase().includes("admin");
 
-          // Same shape the session context writes, so the admin flag and role
-          // survive an offline reload.
-          localStorage.setItem("cr_session_cache_v1", JSON.stringify({
+          // Same shape PermissionContext writes, so role and admin flag survive a reload.
+          saveSessionCache({
             username: offlineUsername,
-            role: u.role || (offlineIsAdmin ? "Administrator" : "User"),
-            permissions: Array.isArray(u.permissions) ? u.permissions : [],
+            role: u.role,
+            permissions: u.permissions,
             isAdmin: offlineIsAdmin,
-            savedAt: Date.now(),
-          }));
+          });
 
           pushToast({
             title: "Offline login",
@@ -191,6 +211,8 @@ const Login = () => {
             success: true,
             duration: 2000,
           });
+
+          markUnlockedThisLaunch();
 
           if (restoreFromCache()) {
             navigate("/dashboard", { replace: true });
