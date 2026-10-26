@@ -141,6 +141,27 @@ const YEARS = ["2024", "2025", "2026"];
 const EMPLOYMENT_VALUES = EMPLOYMENT_FILTERS.map((f) => f.value).filter((v) => v !== "all");
 const VOTING_VALUES = VOTING_FILTERS.map((f) => f.value).filter((v) => v !== "all");
 
+/* Sex: counted per barangay as its own breakdown, separate from the shared demographics stats. */
+const SEX_VALUES = ["male", "female"];
+const SEX_STATS = [
+  { key: "male", label: "Male" },
+  { key: "female", label: "Female" },
+];
+const SEX_FILTERS = [
+  { value: "all", label: "All Sexes" },
+  { value: "male", label: "Male" },
+  { value: "female", label: "Female" },
+];
+
+/* Demographic Type dropdown: the shared types plus Male and Female. */
+const DEMO_TYPE_OPTIONS = [
+  ...DEMOGRAPHIC_TYPES,
+  ...SEX_STATS.map((s) => ({ value: s.key, label: s.label })),
+];
+
+/* Demographics table columns: Male and Female first, then the shared stats. */
+const TABLE_STATS = [...SEX_STATS, ...DEMO_STATS];
+
 /* Sample generator limits. */
 const SAMPLE_MAX = 2000;
 const SAMPLE_DEFAULT = 100;
@@ -197,15 +218,15 @@ const IMPORT_TARGETS = {
     title: "Import Resident Records",
     description: `One row per resident. Required columns: barangay, age (0 to 120), employment (${EMPLOYMENT_VALUES.join(
       ", "
-    )}), voting (${VOTING_VALUES.join(", ")}).`,
+    )}), voting (${VOTING_VALUES.join(", ")}). Optional column: sex (Male or Female).`,
     required: ["barangay", "age", "employment", "voting"],
     validate: validateResidentRows,
     label: "resident records",
     filename: "resident-records-template.csv",
     template: [
-      "barangay,age,employment,voting",
-      `${BARANGAY_NAMES[0]},34,${EMPLOYMENT_VALUES[0]},${VOTING_VALUES[0]}`,
-      `Prosperidad,68,${EMPLOYMENT_VALUES[EMPLOYMENT_VALUES.length - 1]},${VOTING_VALUES[0]}`,
+      "barangay,age,sex,employment,voting",
+      `${BARANGAY_NAMES[0]},34,Male,${EMPLOYMENT_VALUES[0]},${VOTING_VALUES[0]}`,
+      `Prosperidad,68,Female,${EMPLOYMENT_VALUES[EMPLOYMENT_VALUES.length - 1]},${VOTING_VALUES[0]}`,
     ],
   },
 };
@@ -316,6 +337,38 @@ function downloadCsv(csv, filename) {
   URL.revokeObjectURL(url);
 }
 
+/* Accepts common spellings ("Male", "M", "female", "F") and returns "male", "female", or null. */
+function normalizeSex(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v === "male" || v === "m") return "male";
+  if (v === "female" || v === "f") return "female";
+  return null;
+}
+
+/* Reads sex from a resident record. Accepts either a "sex" or "gender" field. */
+function sexOf(record) {
+  return normalizeSex(record.sex ?? record.gender);
+}
+
+/* Counts males and females per barangay from a list of residents. Residents without a valid sex are not counted. */
+function countSexByBarangay(records) {
+  const out = Object.fromEntries(BARANGAY_NAMES.map((n) => [n, { male: 0, female: 0 }]));
+  records.forEach((r) => {
+    const bucket = out[r.barangay];
+    if (!bucket) return;
+    const s = sexOf(r);
+    if (s) bucket[s]++;
+  });
+  return out;
+}
+
+/* Adds male and female counts onto each barangay's shared demographic stats. */
+function withSex(statsByBarangay, sexByBarangay) {
+  return Object.fromEntries(
+    BARANGAY_NAMES.map((n) => [n, { ...statsByBarangay[n], ...sexByBarangay[n] }])
+  );
+}
+
 /* Small seeded PRNG so demo residents are the same on every load. */
 function mulberry32(seed) {
   let s = seed;
@@ -341,6 +394,7 @@ function generateDemoResidents(total) {
       out.push({
         barangay: b.name,
         age: Math.min(95, Math.floor(rng() * rng() * 100)),
+        sex: pick(SEX_VALUES),
         employment: pick(EMPLOYMENT_VALUES),
         voting: pick(VOTING_VALUES),
       });
@@ -429,18 +483,22 @@ function validateResidentRows(rows) {
   const errors = [];
   rows.forEach(({ lineNo, values }) => {
     const age = Number(values.age);
+    const sexRaw = (values.sex || "").trim();
+    const sex = normalizeSex(sexRaw);
     const emp = EMPLOYMENT_VALUES.find((v) => v.toLowerCase() === (values.employment || "").toLowerCase());
     const vot = VOTING_VALUES.find((v) => v.toLowerCase() === (values.voting || "").toLowerCase());
     if (!BARANGAY_NAMES.includes(values.barangay)) {
       errors.push(`Row ${lineNo}: unknown barangay "${values.barangay}"`);
     } else if (values.age === "" || !Number.isInteger(age) || age < 0 || age > 120) {
       errors.push(`Row ${lineNo}: age must be a whole number from 0 to 120`);
+    } else if (sexRaw && !sex) {
+      errors.push(`Row ${lineNo}: sex must be Male or Female (or left blank)`);
     } else if (!emp) {
       errors.push(`Row ${lineNo}: employment must be one of ${EMPLOYMENT_VALUES.join(", ")}`);
     } else if (!vot) {
       errors.push(`Row ${lineNo}: voting must be one of ${VOTING_VALUES.join(", ")}`);
     } else {
-      valid.push({ barangay: values.barangay, age, employment: emp, voting: vot });
+      valid.push({ barangay: values.barangay, age, sex, employment: emp, voting: vot });
     }
   });
   return { valid, errors };
@@ -479,9 +537,10 @@ function generateSampleCsv(target, count, year) {
       lines.push(`${barangay},${type},${year}-${pad(month)}-${pad(day)}`);
     } else {
       const age = Math.min(95, Math.floor(Math.random() * Math.random() * 100));
+      const sex = ["Male", "Female"][Math.floor(Math.random() * 2)];
       const employment = EMPLOYMENT_VALUES[Math.floor(Math.random() * EMPLOYMENT_VALUES.length)];
       const voting = VOTING_VALUES[Math.floor(Math.random() * VOTING_VALUES.length)];
-      lines.push(`${barangay},${age},${employment},${voting}`);
+      lines.push(`${barangay},${age},${sex},${employment},${voting}`);
     }
   }
   return lines.join("\n");
@@ -785,6 +844,8 @@ function TrendChart({ data, height = 190 }) {
 }
 
 function DemographicDetail({ name, stats, onClose }) {
+  const rowsDef = [...DEMO_STATS.filter((s) => s.key !== "total"), ...SEX_STATS];
+
   return (
     <div className="demo-detail">
       <div className="demo-detail__header">
@@ -800,7 +861,7 @@ function DemographicDetail({ name, stats, onClose }) {
       </div>
 
       <div className="demo-detail__rows">
-        {DEMO_STATS.filter((s) => s.key !== "total").map((s) => {
+        {rowsDef.map((s) => {
           const width = stats.total > 0 ? (stats[s.key] / stats.total) * 100 : 0;
           return (
             <div className="demo-detail__row" key={s.key}>
@@ -1215,6 +1276,7 @@ export default function Heatmaps() {
 
   const [demoType, setDemoType] = useState("total");
   const [ageGroup, setAgeGroup] = useState("all");
+  const [sex, setSex] = useState("all");
   const [employment, setEmployment] = useState("all");
   const [voting, setVoting] = useState("all");
 
@@ -1319,21 +1381,31 @@ export default function Heatmaps() {
 
   const classified = useMemo(() => prepareResidents(residentSource, BARANGAY_NAMES), [residentSource]);
 
+  // Male and female counts per barangay, across all residents (before any filter).
+  const allSexByBarangay = useMemo(() => countSexByBarangay(classified.records), [classified]);
+
   const allStatsByBarangay = useMemo(
-    () => aggregateByBarangay(classified.records, BARANGAY_NAMES),
-    [classified]
+    () =>
+      withSex(aggregateByBarangay(classified.records, BARANGAY_NAMES), allSexByBarangay),
+    [classified, allSexByBarangay]
   );
+
+  // Residents after the age, employment, voting, and sex filters.
+  const filteredRecords = useMemo(() => {
+    const base = filterRecords(classified.records, { ageGroup, employment, voting });
+    return sex === "all" ? base : base.filter((r) => sexOf(r) === sex);
+  }, [classified, ageGroup, employment, voting, sex]);
 
   const filteredStatsByBarangay = useMemo(
     () =>
-      aggregateByBarangay(
-        filterRecords(classified.records, { ageGroup, employment, voting }),
-        BARANGAY_NAMES
+      withSex(
+        aggregateByBarangay(filteredRecords, BARANGAY_NAMES),
+        countSexByBarangay(filteredRecords)
       ),
-    [classified, ageGroup, employment, voting]
+    [filteredRecords]
   );
 
-  const demoTypeLabel = DEMOGRAPHIC_TYPES.find((t) => t.value === demoType).label;
+  const demoTypeLabel = DEMO_TYPE_OPTIONS.find((t) => t.value === demoType).label;
 
   const demoRows = useMemo(
     () =>
@@ -1342,16 +1414,27 @@ export default function Heatmaps() {
         return {
           name,
           stats,
-          value: stats[demoType],
+          value: stats[demoType] ?? 0,
           hasData: allStatsByBarangay[name].total > 0,
         };
       }).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name)),
     [filteredStatsByBarangay, allStatsByBarangay, demoType]
   );
 
-  const demoTotals = useMemo(
-    () => sumStats(Object.values(filteredStatsByBarangay)),
-    [filteredStatsByBarangay]
+  const demoTotals = useMemo(() => {
+    const base = sumStats(Object.values(filteredStatsByBarangay));
+    const values = Object.values(filteredStatsByBarangay);
+    return {
+      ...base,
+      male: values.reduce((s, x) => s + x.male, 0),
+      female: values.reduce((s, x) => s + x.female, 0),
+    };
+  }, [filteredStatsByBarangay]);
+
+  // Residents without a valid sex value, so the table footnote can mention them.
+  const unknownSexCount = useMemo(
+    () => classified.records.filter((r) => !sexOf(r)).length,
+    [classified]
   );
 
   const demoScale = useMemo(
@@ -1377,6 +1460,7 @@ export default function Heatmaps() {
             label: s.label,
             value: r.stats[s.key],
           })),
+          ...SEX_STATS.map((s) => ({ label: s.label, value: r.stats[s.key] })),
           { label: "Total Population", value: r.stats.total, total: true },
         ]),
       }));
@@ -1570,16 +1654,17 @@ export default function Heatmaps() {
         return;
       }
 
-      const header = ["No", "Barangay", ...DEMO_STATS.map((s) => s.label)];
+      const header = ["No", "Barangay", ...TABLE_STATS.map((s) => s.label)];
       const rows = demoRows.map((r, i) => [
         i + 1,
         `"${r.name}"`,
-        ...DEMO_STATS.map((s) => r.stats[s.key]),
+        ...TABLE_STATS.map((s) => r.stats[s.key]),
       ]);
       const meta = [
         `Data Source,${isReal ? "Real" : "Demo"}`,
         `Demographic Type,${demoTypeLabel}`,
         `Age Group,${AGE_GROUPS.find((f) => f.value === ageGroup).label}`,
+        `Sex,${SEX_FILTERS.find((f) => f.value === sex).label}`,
         `Employment,${EMPLOYMENT_FILTERS.find((f) => f.value === employment).label}`,
         `Voting,${VOTING_FILTERS.find((f) => f.value === voting).label}`,
         `Generated,"${new Date().toLocaleString()}"`,
@@ -1700,7 +1785,7 @@ export default function Heatmaps() {
       legendHint = demoSelected
         ? `${demoSelected.name}: ${demoSelected.value.toLocaleString()} ${demoTypeLabel.toLowerCase()} (${formatPercent(
             demoSelected.value,
-            demoTotals[demoType]
+            demoTotals[demoType] ?? demoTotals.total
           )}% of citywide). Click again to clear.`
         : "Click a barangay on the map to highlight it in the table and see its full demographic breakdown below.";
     }
@@ -1779,7 +1864,7 @@ export default function Heatmaps() {
               <label className="filter">
                 <span>Demographic Type</span>
                 <select value={demoType} onChange={(e) => setDemoType(e.target.value)}>
-                  {DEMOGRAPHIC_TYPES.map((t) => (
+                  {DEMO_TYPE_OPTIONS.map((t) => (
                     <option key={t.value} value={t.value}>
                       {t.label}
                     </option>
@@ -1806,6 +1891,17 @@ export default function Heatmaps() {
                 <span>Age Group</span>
                 <select value={ageGroup} onChange={(e) => setAgeGroup(e.target.value)}>
                   {AGE_GROUPS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="filter">
+                <span>Sex</span>
+                <select value={sex} onChange={(e) => setSex(e.target.value)}>
+                  {SEX_FILTERS.map((f) => (
                     <option key={f.value} value={f.value}>
                       {f.label}
                     </option>
@@ -2015,7 +2111,7 @@ export default function Heatmaps() {
           {isDemo ? (
             <>
               {isDemoLoading ? (
-                <StatGridSkeleton count={DEMO_STATS.length} />
+                <StatGridSkeleton count={DEMO_STATS.length + SEX_STATS.length} />
               ) : (
                 <div className="stat-grid">
                   {DEMO_STATS.map((s) => (
@@ -2034,6 +2130,18 @@ export default function Heatmaps() {
                       dim={demoType !== "total" && demoType !== s.key}
                     />
                   ))}
+                  {SEX_STATS.map((s) => (
+                    <StatCard
+                      key={s.key}
+                      tone="demo"
+                      icon={<UsersIcon />}
+                      label={s.label}
+                      value={demoScope[s.key] ?? 0}
+                      sub={`${formatPercent(demoScope[s.key] ?? 0, demoScope.total)}% of total`}
+                      active={demoType === s.key}
+                      dim={demoType !== "total" && demoType !== s.key}
+                    />
+                  ))}
                 </div>
               )}
 
@@ -2043,7 +2151,7 @@ export default function Heatmaps() {
                 </div>
                 {isDemoLoading ? (
                   <>
-                    <DemoTableSkeleton columns={DEMO_STATS} />
+                    <DemoTableSkeleton columns={TABLE_STATS} />
                     <div className="table-footnote">
                       <Skeleton width="55%" height={11} />
                     </div>
@@ -2056,7 +2164,7 @@ export default function Heatmaps() {
                           <tr>
                             <th>No</th>
                             <th>Barangay</th>
-                            {DEMO_STATS.map((s) => (
+                            {TABLE_STATS.map((s) => (
                               <th key={s.key} className={`num${demoType === s.key ? " th--highlight" : ""}`}>
                                 {s.label}
                               </th>
@@ -2072,12 +2180,12 @@ export default function Heatmaps() {
                             >
                               <td>{i + 1}</td>
                               <td>{r.name}</td>
-                              {DEMO_STATS.map((s) => (
+                              {TABLE_STATS.map((s) => (
                                 <td
                                   key={s.key}
                                   className={`num${demoType === s.key ? " cell--highlight" : s.key === "total" ? " cell--strong" : ""}`}
                                 >
-                                  {r.stats[s.key].toLocaleString()}
+                                  {(r.stats[s.key] ?? 0).toLocaleString()}
                                 </td>
                               ))}
                             </tr>
@@ -2089,6 +2197,9 @@ export default function Heatmaps() {
                       Showing {demoRows.length} of {demoRows.length} barangays, sorted by {demoTypeLabel.toLowerCase()}
                       {classified.skipped > 0
                         ? ` · ${classified.skipped.toLocaleString()} resident record(s) skipped (missing barangay or age)`
+                        : ""}
+                      {unknownSexCount > 0
+                        ? ` · ${unknownSexCount.toLocaleString()} record(s) without a valid sex (not counted in Male/Female)`
                         : ""}
                     </p>
                   </>
