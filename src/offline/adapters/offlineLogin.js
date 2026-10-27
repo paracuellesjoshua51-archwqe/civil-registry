@@ -30,20 +30,6 @@ const writeCreds = (all) => localStorage.setItem(CREDS_KEY, JSON.stringify(all))
 const readLocks = () => readJSON(LOCK_KEY, {});
 const writeLocks = (locks) => localStorage.setItem(LOCK_KEY, JSON.stringify(locks));
 
-// Removes this device's offline unlock records for a username, in every category.
-export function removeOfflineCredentialsFor(username) {
-  const user = normUser(username);
-  const all = readCreds();
-  let changed = false;
-  for (const key of Object.keys(all)) {
-    if (key.startsWith(`${user}|`)) {
-      delete all[key];
-      changed = true;
-    }
-  }
-  if (changed) writeCreds(all);
-}
-
 // Called from Login.jsx after a successful online login.
 export async function saveOfflineCredential(username, password, profile = {}) {
   try {

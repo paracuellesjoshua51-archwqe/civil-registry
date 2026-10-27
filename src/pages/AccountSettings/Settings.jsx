@@ -9,15 +9,11 @@ import {
   saveDisplayPrefs,
   applyDisplayPrefs,
 } from "../../utils/displayPrefs";
-import { usePermissions } from "../../context/PermissionContext";
-import FaceEnrollPanel from "./FaceEnrollPanel";
 
 const TABS = [
   { key: "display", label: "Display", desc: "Full screen and window" },
   { key: "about", label: "About", desc: "App version and requirements" },
 ];
-
-const FACE_TAB = { key: "face", label: "Face Unlock", desc: "Admin account recovery" };
 
 // Update these values after testing on the actual machine.
 const SYSTEM_REQUIREMENTS = [
@@ -371,20 +367,18 @@ function AboutPanel() {
 /* ── Hub ─────────────────────────────────────────────────── */
 const Settings = ({ initialTab = "display" }) => {
   const [tab, setTab] = useState(initialTab);
-  const { is_admin } = usePermissions();
-  const tabs = is_admin ? [...TABS, FACE_TAB] : TABS;
 
   useEffect(() => {
     setTab(initialTab);
   }, [initialTab]);
 
-  const current = tabs.find((t) => t.key === tab) ?? tabs[0];
+  const current = TABS.find((t) => t.key === tab) ?? TABS[0];
 
   return (
     <div className="st-root">
       <div className="st-body">
         <div className="st-tabs" role="tablist" aria-label="System settings">
-          {tabs.map((t) => (
+          {TABS.map((t) => (
             <button
               key={t.key}
               type="button"
@@ -408,11 +402,6 @@ const Settings = ({ initialTab = "display" }) => {
           <div className="st-panel-body">
             {tab === "display" && <DisplayPanel />}
             {tab === "about" && <AboutPanel />}
-            {tab === "face" && is_admin && (
-              <div className="st-section-group">
-                <FaceEnrollPanel />
-              </div>
-            )}
           </div>
         </div>
       </div>
