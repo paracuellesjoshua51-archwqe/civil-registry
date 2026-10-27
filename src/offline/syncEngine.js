@@ -183,8 +183,16 @@ export async function runSync() {
         paused.add(op.entity);
         serverError = serverError || `${op.entity}: server error (${s})`;
       } else if (s === 409) {
-        await markConflict(op, msg);
-        summary.failed += 1;
+        // Only "step already completed" means the server already has this result.
+        // Every other 409 (duplicate person, duplicate file, doc number in use)
+        // stays a conflict so the user can decide.
+        if (/already been completed/i.test(msg || '')) {
+          await markSynced(op.opId);
+          summary.succeeded += 1;
+        } else {
+          await markConflict(op, msg);
+          summary.failed += 1;
+        }
       } else {
         await updateOp(op.opId, { status: 'failed', lastError: msg || `Rejected (${s})` });
         summary.failed += 1;
