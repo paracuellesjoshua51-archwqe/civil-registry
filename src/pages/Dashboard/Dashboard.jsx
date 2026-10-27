@@ -476,9 +476,8 @@ const KpiStrip = ({ items = [] }) => (
           aria-label={clickable ? `Open ${it.label}` : undefined}
         >
           <div className="an-strip-label">
-            {it.accent && <span className="an-strip-dot" style={{ background: it.accent }} />}
-            <span>{it.label}</span>
-          </div>
+  <span>{it.label}</span>
+</div>
           <div className="an-strip-row">
             <span className="an-strip-value">{it.value}</span>
             {it.delta && (
