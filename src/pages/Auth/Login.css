@@ -366,29 +366,3 @@ input[type="password"]::-ms-clear { display: none; }
     animation: none;
   }
 }
-.face-unlock-btn {
-  width: 100%;
-  margin-top: 12px;
-  padding: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1.5px solid #1a73e8;
-  background: #ffffff;
-  color: #1a73e8;
-  font-size: 15px;
-  font-weight: 600;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-
-.face-unlock-btn:hover:not(:disabled) {
-  background: rgba(26, 115, 232, 0.08);
-}
-
-.face-unlock-btn:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}

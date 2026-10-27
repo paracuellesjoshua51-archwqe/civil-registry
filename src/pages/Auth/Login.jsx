@@ -3,12 +3,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import "./Login.css";
-import FaceCaptureModal from "../../components/FaceCaptureModal";
-import {
-  saveOfflineCredential,
-  verifyOfflineLogin,
-  removeOfflineCredentialsFor,
-} from "../../offline/adapters/offlineLogin";
+import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
 import { pushToast } from "../../services/toastService";
 import { usePermissions, markSessionActive, saveSessionCache } from "../../context/PermissionContext";
 import bgImage from "../../assets/images/home.jpg";
@@ -76,16 +71,6 @@ const LockFilledIcon = () => (
   </svg>
 );
 
-const FaceIcon = () => (
-  <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-    <circle cx="9" cy="10" r="1" />
-    <circle cx="15" cy="10" r="1" />
-    <path d="M9 15a4 4 0 0 0 6 0" />
-  </svg>
-);
-
 function formatLockCountdown(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds));
 
@@ -110,12 +95,6 @@ const Login = () => {
 
   const [lockSecondsRemaining, setLockSecondsRemaining] = useState(0);
   const countdownRef = useRef(null);
-
-  // Set only when the server offers face unlock for a locked administrator.
-  // Kept separate from isLocked so typing in the fields doesn't hide it.
-  const [faceUsername, setFaceUsername]         = useState(null);
-  const [showFaceCapture, setShowFaceCapture]   = useState(false);
-  const [faceBusy, setFaceBusy]                 = useState(false);
 
   const navigate = useNavigate();
   const { refresh, restoreFromCache, authenticated, loading: sessionLoading } = usePermissions();
@@ -142,7 +121,6 @@ const Login = () => {
         if (prev <= 1) {
           clearInterval(countdownRef.current);
           setIsLocked(false);
-          setFaceUsername(null);
           return 0;
         }
         return prev - 1;
@@ -152,97 +130,6 @@ const Login = () => {
     return () => clearInterval(countdownRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLocked]);
-
-  // Shared tail of every successful sign-in. Returns false if the session
-  // could not be confirmed with the server.
-  const enterDashboard = async () => {
-    markSessionActive();
-    markUnlockedThisLaunch();
-    const signedIn = await refresh();
-    if (signedIn) {
-      navigate("/dashboard", { replace: true });
-      return true;
-    }
-    return false;
-  };
-
-  // Applies a lock response from the server. For an administrator, this device's
-  // offline record is removed so the locked account can't log in offline.
-  const handleLockResponse = (data, locked) => {
-    setIsLocked(locked);
-    setLockSecondsRemaining(locked ? (data.lock_seconds_remaining || 0) : 0);
-    if (locked && data.admin_lock) {
-      removeOfflineCredentialsFor(username.trim());
-    }
-    if (locked && data.unlock_method === "face") {
-      setFaceUsername(username.trim());
-    }
-  };
-
-  const handleFaceUnlock = async (imageBase64) => {
-    if (!faceUsername || faceBusy) return;
-    setFaceBusy(true);
-
-    let challenge;
-    try {
-      const ch = await axios.post(
-        `${API}/api/face/challenge`,
-        { username: faceUsername },
-        { withCredentials: true }
-      );
-      challenge = ch.data.challenge;
-    } catch (err) {
-      // 403 means the lock ended or the account is no longer eligible.
-      if (err?.response?.status === 403) setFaceUsername(null);
-      setShowFaceCapture(false);
-      pushToast({
-        title: "Face unlock unavailable",
-        message: err?.response?.data?.message || "Please try again.",
-        success: false,
-      });
-      setFaceBusy(false);
-      return;
-    }
-
-    try {
-      const res = await axios.post(
-        `${API}/api/face/unlock`,
-        { username: faceUsername, challenge, image: imageBase64 },
-        { withCredentials: true }
-      );
-
-      setShowFaceCapture(false);
-      setFaceUsername(null);
-      setIsLocked(false);
-      setLockSecondsRemaining(0);
-      pushToast({
-        title: "Account unlocked",
-        message: res.data?.message || "Face verified.",
-        success: true,
-        duration: 2000,
-      });
-
-      // The typed password is not used here, so the offline credential is
-      // intentionally not re-saved. It is re-saved on the next password login.
-      if (!(await enterDashboard())) {
-        pushToast({
-          title: "Login failed",
-          message: "Could not confirm your session. Please try again.",
-          success: false,
-        });
-      }
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 403 || status === 503) setShowFaceCapture(false);
-      pushToast({
-        title: "Face unlock failed",
-        message: err?.response?.data?.message || "Face verification failed. Please try again.",
-        success: false,
-      });
-    } finally {
-      setFaceBusy(false);
-    }
-  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -261,7 +148,6 @@ const Login = () => {
       if (response.data.success) {
         setIsLocked(false);
         setLockSecondsRemaining(0);
-        setFaceUsername(null);
         const userObj = response.data.user || {};
         const loggedUsername = userObj.username || username;
 
@@ -270,7 +156,14 @@ const Login = () => {
 
         pushToast({ title: "Login successful!", message: msg, success: true, duration: 2000 });
 
-        if (await enterDashboard()) return;
+        // Mark this tab as logged in, then confirm the session with the server.
+        markSessionActive();
+        markUnlockedThisLaunch();
+        const signedIn = await refresh();
+        if (signedIn) {
+          navigate("/dashboard", { replace: true });
+          return;
+        }
 
         pushToast({
           title: "Login failed",
@@ -280,7 +173,8 @@ const Login = () => {
         setLoading(false);
       } else {
         const locked = msg.toLowerCase().includes("locked");
-        handleLockResponse(response.data, locked);
+        setIsLocked(locked);
+        setLockSecondsRemaining(locked ? (response.data.lock_seconds_remaining || 0) : 0);
         pushToast({
           title: locked ? "Account locked" : "Login failed",
           message: msg,
@@ -343,10 +237,11 @@ const Login = () => {
       }
 
       // 4xx from the server (wrong password, locked, etc.)
-      const data = error?.response?.data || {};
-      const backendMessage = data.message || "Server error. Please try again later.";
+      const backendMessage =
+        error?.response?.data?.message || "Server error. Please try again later.";
       const locked = backendMessage.toLowerCase().includes("locked");
-      handleLockResponse(data, locked);
+      setIsLocked(locked);
+      setLockSecondsRemaining(locked ? (error?.response?.data?.lock_seconds_remaining || 0) : 0);
       pushToast({
         title: locked ? "Account locked" : "Login failed",
         message: backendMessage,
@@ -450,31 +345,9 @@ const Login = () => {
               </button>
             </form>
 
-            {faceUsername && (
-              <button
-                type="button"
-                className="face-unlock-btn"
-                onClick={() => setShowFaceCapture(true)}
-                disabled={faceBusy || loading}
-              >
-                <FaceIcon />
-                Unlock with Face Scan
-              </button>
-            )}
-
             <p className="login-footnote">Office of the Local Civil Registrar</p>
           </div>
         </div>
-
-        {showFaceCapture && (
-          <FaceCaptureModal
-            title="Face verification"
-            actionLabel="Verify face"
-            busy={faceBusy}
-            onCapture={handleFaceUnlock}
-            onClose={() => setShowFaceCapture(false)}
-          />
-        )}
       </div>
     </div>
   );
