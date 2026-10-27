@@ -28,7 +28,7 @@ const wordSimilarity = (a, b) => {
   return 1 - dp[a.length][b.length] / Math.max(a.length, b.length);
 };
 
-// Compare a searched name (possibly multi-word) to a record name (0..1)
+
 const fieldSimilarity = (searched, recordValue) => {
   const q = normalize(searched).split(" ").filter(Boolean);
   const r = normalize(recordValue).split(" ").filter(Boolean);
