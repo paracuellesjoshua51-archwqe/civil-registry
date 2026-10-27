@@ -23,12 +23,7 @@ async function deleteChunkOnServer(api, ids) {
   }
 }
 
-/**
- * Deletes the selected records.
- * - Online: server ids go to the bulk endpoint in batches of 100.
- * - Offline, or ids that exist only on this device: each goes through deleteOne,
- *   which queues the delete for later sync.
- */
+
 export async function runBulkDelete({ api, ids, byId, deleteOne }) {
   const online = isOnline();
   const serverIds = online ? ids.filter((id) => typeof id === "number") : [];
