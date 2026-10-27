@@ -215,7 +215,8 @@ export default function SyncCenter() {
       return;
     }
     const parts = [`${res.succeeded} synced`, `${res.failed} failed`];
-    if (res.paused) {
+    const pausedCount = res.pausedEntities?.length || 0;
+    if (pausedCount) {
       const first = res.pausedEntities[0];
       parts.push(`${ENTITY_LABEL[first] || first} paused by a server error (retrying)`);
     }
@@ -223,7 +224,7 @@ export default function SyncCenter() {
       parts.push(`${res.skippedOtherLogin} waiting for their own login`);
     }
     setNotice({
-      type: res.failed || res.paused ? 'warn' : 'ok',
+      type: res.failed || pausedCount ? 'warn' : 'ok',
       text: `${label}: ${parts.join(' · ')}.`,
     });
   };

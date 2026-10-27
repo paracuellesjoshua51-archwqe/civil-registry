@@ -6,7 +6,6 @@ import {
 import { subscribeOutbox, getCounts, listAll } from '../offline/outboxQueue';
 import { isScopeLoaded, subscribeSyncScope } from '../offline/syncScope';
 import { refreshAllOfflineCredentials } from '../offline/archivePassword';
-import { warmBirthCache } from '../offline/birthOffline';
 import { warmVitalCache } from '../offline/vitalOffline';
 import { refreshTrackingPersonnel } from '../offline/adapters/documentTrackingOffline';
 import { usePermissions } from './PermissionContext';
@@ -157,7 +156,7 @@ export function OfflineProvider({ children }) {
       await refreshAllOfflineCredentials();
       if (!alive) return;
 
-      const birthCancel = await warmBirthCache(`${API_BASE}/api/birth`);
+      const birthCancel = await warmVitalCache('birth', `${API_BASE}/api/birth`);
       if (!alive) { birthCancel?.(); return; }
       if (birthCancel) cancels.push(birthCancel);
 

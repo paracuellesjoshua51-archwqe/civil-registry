@@ -1,5 +1,5 @@
 import { apiFetch } from "../services/apiFetch";
-import { isOnline } from "../offline/connectivityService";
+import { isDbAvailable } from "../offline/connectivityService";
 
 const CHUNK_SIZE = 100;
 
@@ -25,7 +25,7 @@ async function deleteChunkOnServer(api, ids) {
 
 
 export async function runBulkDelete({ api, ids, byId, deleteOne }) {
-  const online = isOnline();
+  const online = isDbAvailable();
   const serverIds = online ? ids.filter((id) => typeof id === "number") : [];
   const serverSet = new Set(serverIds);
   const localIds = ids.filter((id) => !serverSet.has(id));

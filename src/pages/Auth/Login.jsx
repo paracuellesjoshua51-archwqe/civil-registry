@@ -7,7 +7,8 @@ import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapter
 import { pushToast } from "../../services/toastService";
 import { usePermissions, markSessionActive, saveSessionCache } from "../../context/PermissionContext";
 import bgImage from "../../assets/images/home.jpg";
-import loginLogo from "../../assets/images/scc.png";
+
+const loginLogo = "/scc.png";
 
 const API = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -352,5 +353,4 @@ const Login = () => {
     </div>
   );
 };
-
 export default Login;

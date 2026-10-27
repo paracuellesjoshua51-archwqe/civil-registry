@@ -1,0 +1,13 @@
+/* Replaces the inline style object that was copied into all three pages. */
+.neg-cert-doc__or-input {
+  border: none;
+  border-bottom: 1px solid #94a3b8;
+  background: transparent;
+  outline: none;
+  font: inherit;
+  color: #1a3c6e;
+  font-weight: 700;
+  padding: 0 4px;
+  flex: 1;
+  min-width: 100pt;
+}

@@ -1,38 +1,42 @@
-// src/offline/vitalOffline.js
+// Offline layer for Birth, Death and Marriage. One implementation, selected by
+// `entity`. Record lists live in localStorage (archiveLocalStore.js); PDFs and
+// the outbox live in IndexedDB.
 //
-// Offline layer for Marriage and Death. Record lists are stored in localStorage
-// through archiveLocalStore.js; PDFs and outbox items stay in IndexedDB.
+// Cache keys are "<entity>:records" / "<entity>:archived" in localStorage, so
+// cache.js can clear them on logout.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getDB } from './db';
-import { isOnline, isDbAvailable, subscribeDb, checkNow } from './connectivityService';
-import { enqueue, listByStatus, subscribeOutbox, removeOp } from './outboxQueue';
-import { saveFile, getFile } from './fileStore';
-import { subscribeSyncState } from './syncEngine';
-import useOnlineStatus from '../hooks/useOnlineStatus';
-import { refreshAllOfflineCredentials } from './archivePassword';
-import { saveRecordList, loadRecordList } from './archiveLocalStore';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getDB } from "./db";
+import { isDbAvailable, subscribeDb, checkNow } from "./connectivityService";
+import { enqueue, listByStatus, subscribeOutbox, removeOp } from "./outboxQueue";
+import { saveFile, getFile } from "./fileStore";
+import { subscribeSyncState } from "./syncEngine";
+import useOnlineStatus from "../hooks/useOnlineStatus";
+import { refreshAllOfflineCredentials } from "./archivePassword";
+import { saveRecordList, loadRecordList } from "./archiveLocalStore";
+import { apiFetch } from "../services/apiFetch";
+import { createPdfBlobFromData } from "../utils/pdfUtils";
+import { fetchJsonWithRetry } from "../utils/fetchJsonWithRetry";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pdfKey = (entity, id) => `vr-${entity}-pdf:${id}`;
+const NUMERIC_ID = /^\d+$/;
 
 /* ── list cache (localStorage) ── */
 
-export async function saveList(entity, name, data) {
+export const saveList = async (entity, name, data) =>
   saveRecordList(`${entity}:${name}`, data);
-}
 
 /** @returns {{data: any[], savedAt: number} | null} */
-export async function loadList(entity, name) {
-  return loadRecordList(`${entity}:${name}`);
-}
+export const loadList = async (entity, name) =>
+  loadRecordList(`${entity}:${name}`);
 
-/* ── PDF cache (IndexedDB Blobs) ── */
+/* ── PDF cache (IndexedDB) ── */
 
 export async function getCachedPdf(entity, id) {
   try {
     const db = await getDB();
-    return (await db.get('cache', pdfKey(entity, id)))?.blob || null;
+    return (await db.get("cache", pdfKey(entity, id)))?.blob || null;
   } catch {
     return null;
   }
@@ -41,55 +45,51 @@ export async function getCachedPdf(entity, id) {
 export async function cachePdf(entity, id, blob) {
   try {
     const db = await getDB();
-    await db.put('cache', { key: pdfKey(entity, id), entity: `vr-${entity}-pdf`, blob, savedAt: Date.now() });
+    await db.put("cache", {
+      key: pdfKey(entity, id),
+      entity: `vr-${entity}-pdf`,
+      blob,
+      savedAt: Date.now(),
+    });
   } catch (e) {
-    console.warn('[vitalOffline] cachePdf failed:', e);
+    console.warn("[vitalOffline] cachePdf failed (storage full?):", e);
   }
 }
 
 async function hasCachedPdf(entity, id) {
   try {
     const db = await getDB();
-    return (await db.getKey('cache', pdfKey(entity, id))) !== undefined;
+    return (await db.getKey("cache", pdfKey(entity, id))) !== undefined;
   } catch {
     return false;
   }
 }
 
-function dataToBlob(d) {
-  if (typeof d !== 'string') return null;
-  try {
-    const bin = atob(d.replace(/^data:application\/pdf;base64,/i, '').replace(/\s/g, ''));
-    const u8 = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return u8[0] === 0x25 && u8[1] === 0x50 ? new Blob([u8], { type: 'application/pdf' }) : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Downloads every PDF that is not on this device yet, one at a time, with a
- * pause between each. Returns a cancel function.
+ * Downloads every PDF not yet on this device, one at a time, with a pause
+ * between each. Returns a cancel function.
  */
-export function startPdfPrefetch(entity, ids, { api, toBlob = dataToBlob, gapMs = 600 }) {
+export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
   let cancelled = false;
   (async () => {
     try { await navigator.storage?.persist?.(); } catch { /* optional */ }
     let failures = 0;
     for (const id of new Set(ids)) {
       if (cancelled || !isDbAvailable()) return;
-      if (!/^\d+$/.test(String(id))) continue; // skip queued "offline-…" rows
+      if (!NUMERIC_ID.test(String(id))) continue;   // skip queued "offline-…" rows
       if (await hasCachedPdf(entity, id)) continue;
       try {
-        const res = await fetch(`${api}/records/${id}?prefetch=1`, { credentials: 'include' });
+        // ?prefetch=1 tells the server not to write a VIEW audit entry.
+        const res = await apiFetch(`${api}/records/${id}?prefetch=1`);
         if (res.status >= 500) throw new Error(String(res.status));
         if (res.ok) {
-          const blob = toBlob((await res.json())?.pdf_data);
+          const data = await res.json();
+          const blob = createPdfBlobFromData(data?.pdf_data);
           if (blob) await cachePdf(entity, id, blob);
         }
         failures = 0;
       } catch {
-        if (++failures >= 3) return;
+        if (++failures >= 3) return;   // server unreachable: stop, retry later
       }
       await sleep(gapMs);
     }
@@ -101,14 +101,16 @@ export function startPdfPrefetch(entity, ids, { api, toBlob = dataToBlob, gapMs 
 
 export async function queueUpload(entity, url, file) {
   const fileId = await saveFile(file);
-  return enqueue({ entity, label: `Upload ${file.name}`, method: 'POST', url, fileId, fileField: 'file' });
+  return enqueue({
+    entity, label: `Upload ${file.name}`, method: "POST", url, fileId, fileField: "file",
+  });
 }
 
-export const queueDelete = (entity, url, who = '') =>
-  enqueue({ entity, label: `Delete ${who}`, method: 'DELETE', url });
+export const queueDelete = (entity, url, who = "") =>
+  enqueue({ entity, label: `Delete ${who}`, method: "DELETE", url });
 
-export const queueTransaction = (entity, url, json, who = '', opId) =>
-  enqueue({ opId, entity, label: `Transaction: ${who}`, method: 'POST', url, json });
+export const queueTransaction = (entity, url, json, who = "", opId) =>
+  enqueue({ opId, entity, label: `Transaction: ${who}`, method: "POST", url, json });
 
 /* ── queued changes, shown immediately in the UI ── */
 
@@ -126,8 +128,8 @@ export function useVitalPending(entity, api) {
 
         const uploads = [];
         for (const o of ops) {
-          if (o.method !== 'POST' || !o.fileId || o.url !== recordsUrl) continue;
-          if (o.status === 'conflict') continue;
+          if (o.method !== "POST" || !o.fileId || o.url !== recordsUrl) continue;
+          if (o.status === "conflict") continue;
           const f = await getFile(o.fileId);
           if (!f) continue;
           const when = new Date(o.createdAt).toISOString();
@@ -146,14 +148,16 @@ export function useVitalPending(entity, api) {
 
         const deleteIds = new Set(
           ops
-            .filter((o) => o.method === 'DELETE' && (o.status === 'pending' || o.status === 'syncing') && o.url.startsWith(deletePrefix))
+            .filter((o) => o.method === "DELETE"
+              && (o.status === "pending" || o.status === "syncing")
+              && o.url.startsWith(deletePrefix))
             .map((o) => decodeURIComponent(o.url.slice(deletePrefix.length))),
         );
 
-        const count = ops.filter((o) => o.status === 'pending' || o.status === 'syncing').length;
+        const count = ops.filter((o) => o.status === "pending" || o.status === "syncing").length;
         if (alive) setState({ uploads, deleteIds, count });
       } catch {
-        /* IndexedDB unavailable */
+        /* IndexedDB unavailable: show server data only */
       }
     };
 
@@ -167,15 +171,15 @@ export function useVitalPending(entity, api) {
 
 /* ── list loading with offline fallback ── */
 
-export async function loadListWithFallback(entity, path, cacheName, fetchJson, signal) {
+export async function loadListWithFallback(entity, path, cacheName, signal) {
   if (isDbAvailable()) {
     try {
-      const data = await fetchJson(path, { signal });
+      const data = await fetchJsonWithRetry(path, { signal });
       const arr = Array.isArray(data) ? data : [];
       await saveList(entity, cacheName, arr);
       return { data: arr, fromCache: false };
     } catch (err) {
-      if (err?.name === 'AbortError') throw err;
+      if (err?.name === "AbortError") throw err;
       const cached = await loadList(entity, cacheName);
       if (cached) return { data: cached.data, fromCache: true, savedAt: cached.savedAt };
       throw err;
@@ -186,111 +190,131 @@ export async function loadListWithFallback(entity, path, cacheName, fetchJson, s
   return { data: [], fromCache: true, empty: true };
 }
 
-/* ── PDF loading: queued file → server (refreshes copy) → saved copy ── */
+/* ── PDF loading: queued file → server (refreshes the copy) → saved copy ── */
 
-export async function loadPdfForRecord(entity, api, id, record, toBlob) {
+export async function loadPdfForRecord(entity, api, id, record) {
   if (record?._pendingFileId) {
     const f = await getFile(record._pendingFileId);
-    if (!f?.blob) throw new Error('This queued file is no longer on the device.');
+    if (!f?.blob) throw new Error("This queued file is no longer on the device.");
     return f.blob;
   }
+
   if (isDbAvailable()) {
     let res = null;
-    try { res = await fetch(`${api}/records/${id}`, { credentials: 'include' }); } catch { /* fall through */ }
-    if (res && res.ok) {
+    try { res = await apiFetch(`${api}/records/${id}`); } catch { /* fall through */ }
+    if (res?.ok) {
       const data = await res.json();
-      if (!data?.pdf_data) throw new Error(data?.pdf_error || 'No PDF data returned by the server.');
-      const blob = toBlob(data.pdf_data);
-      if (blob) { cachePdf(entity, id, blob); return blob; }
-      return data.pdf_data;
+      if (!data?.pdf_data) {
+        throw new Error(data?.pdf_error || "No PDF data returned by the server.");
+      }
+      const blob = createPdfBlobFromData(data.pdf_data);
+      if (blob) {
+        cachePdf(entity, id, blob);
+        return blob;
+      }
+      return data.pdf_data;   // the viewer shows its own "corrupted" message
     }
-    if (res && res.status < 500) throw new Error('Failed to load PDF.');
+    if (res && res.status < 500) throw new Error("Failed to load PDF.");
   }
+
   const cached = await getCachedPdf(entity, id);
   if (cached) return cached;
-  throw new Error(isDbAvailable()
-    ? "Server unreachable and this PDF isn't saved on this device."
-    : "This PDF isn't saved on this device yet. It will be available once the database is reachable.");
+  throw new Error(
+    isDbAvailable()
+      ? "Server unreachable and this PDF isn't saved on this device."
+      : "This PDF isn't saved on this device yet. Connect once so it can be downloaded for offline use.",
+  );
 }
 
 /* ── delete now, or queue it. Returns "deleted" | "queued" | "removed" ── */
 
-export async function deleteRecordSmart(entity, api, id, record, who = '') {
+export async function deleteRecordSmart(entity, api, id, record, who = "") {
   if (record?._pendingOpId) {
     await removeOp(record._pendingOpId);
-    return 'removed';
+    return "removed";
   }
   const url = `${api}/records/${id}`;
-  const queueIt = async () => { await queueDelete(entity, url, who); return 'queued'; };
+  const queueIt = async () => {
+    await queueDelete(entity, url, who);
+    return "queued";
+  };
   if (!isDbAvailable()) return queueIt();
+
   let res;
   try {
-    res = await fetch(url, { method: 'DELETE', credentials: 'include' });
+    res = await apiFetch(url, { method: "DELETE" });
   } catch {
     return queueIt();
   }
   if (res.status >= 500 && !(await checkNow())) return queueIt();
   if (!res.ok) {
-    let msg = '';
+    let msg = "";
     try { msg = (await res.json()).error; } catch { /* non-JSON */ }
-    throw new Error(msg || 'Delete failed');
+    throw new Error(msg || "Delete failed");
   }
-  return 'deleted';
+  return "deleted";
 }
 
-/* ── one hook that replaces the verifier's list state, fetchers and effects ── */
+/* ── the hook the registry uses ── */
 
-export function useVitalData({ entity, api, fetchJson, toBlob, showNotif }) {
+export function useVitalData({ entity, api, showNotif }) {
   const online = useOnlineStatus();
   const pending = useVitalPending(entity, api);
   const [rawActive, setRawActive] = useState([]);
   const [rawArchived, setRawArchived] = useState([]);
   const [loadingRecords, setLoading] = useState(false);
+
   const notifyRef = useRef(showNotif);
-  notifyRef.current = showNotif;
+  useEffect(() => { notifyRef.current = showNotif; }, [showNotif]);
   const abortActive = useRef(null);
   const abortArchived = useRef(null);
   const lastWarn = useRef(0);
 
   const warn = useCallback(async (res, label) => {
     if (!res.fromCache) return;
-    const now = Date.now();
-    if (now - lastWarn.current < 5000) return;
-    if (res.empty) {
-      lastWarn.current = now;
-      notifyRef.current(`No saved ${label} on this device yet. Connect once so they can be downloaded.`, 'error');
-      return;
-    }
-    if (isOnline() && (await checkNow())) {
-      lastWarn.current = now;
-      notifyRef.current(`Server error. Showing ${label} saved on this device.`, 'error');
+    try {
+      const now = Date.now();
+      if (now - lastWarn.current < 5000) return;
+      if (res.empty) {
+        lastWarn.current = now;
+        notifyRef.current(`No saved ${label} on this device yet. Connect once so they can be downloaded.`, "error");
+        return;
+      }
+      if (isDbAvailable() && (await checkNow())) {
+        lastWarn.current = now;
+        notifyRef.current(`Server error. Showing ${label} saved on this device.`, "error");
+      }
+    } catch {
+      /* the connectivity check failed: stay quiet */
     }
   }, []);
 
+  // Returns true when the list is current, false when it could not be loaded.
   const load = useCallback(async (path, cacheName, abortRef, setData, label) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
     try {
-      const res = await loadListWithFallback(entity, `${api}/${path}`, cacheName, fetchJson, controller.signal);
+      const res = await loadListWithFallback(entity, `${api}/${path}`, cacheName, controller.signal);
       setData(res.data);
       warn(res, label);
+      return true;
     } catch (err) {
-      if (err?.name !== 'AbortError') {
-        notifyRef.current(`Failed to load ${label}. ${err?.message || ''}`.trim(), 'error');
-      }
+      if (err?.name === "AbortError") return true;   // a newer request decides
+      notifyRef.current(`Failed to load ${label}. ${err?.message || ""}`.trim(), "error");
+      return false;
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
-  }, [entity, api, fetchJson, warn]);
+  }, [entity, api, warn]);
 
   const fetchRecords = useCallback(
-    () => load('records', 'records', abortActive, setRawActive, 'records'),
+    () => load("records", "records", abortActive, setRawActive, "records"),
     [load],
   );
   const fetchArchived = useCallback(
-    () => load('archived', 'archived', abortArchived, setRawArchived, 'archived records'),
+    () => load("archived", "archived", abortArchived, setRawArchived, "archived records"),
     [load],
   );
 
@@ -303,11 +327,12 @@ export function useVitalData({ entity, api, fetchJson, toBlob, showNotif }) {
     wasOnline.current = online;
   }, [online, fetchRecords, fetchArchived]);
 
-  // Database came back (server may already have been reachable).
+  // Database came back.
   useEffect(() => subscribeDb((ok) => {
     if (ok) { fetchRecords(); fetchArchived(); }
   }), [fetchRecords, fetchArchived]);
 
+  // While the outbox drains, refresh as items sync (debounced).
   useEffect(() => {
     let timer;
     let last = { done: 0, syncing: false };
@@ -321,12 +346,12 @@ export function useVitalData({ entity, api, fetchJson, toBlob, showNotif }) {
     return () => { unsub(); clearTimeout(timer); };
   }, [fetchRecords, fetchArchived]);
 
+  // Background-download PDFs so they open offline.
   useEffect(() => {
     if (!online) return undefined;
     const ids = [...rawActive, ...rawArchived].map((r) => r.id);
-    if (!ids.length) return undefined;
-    return startPdfPrefetch(entity, ids, { api, toBlob });
-  }, [online, rawActive, rawArchived, entity, api, toBlob]);
+    return ids.length ? startPdfPrefetch(entity, ids, api) : undefined;
+  }, [online, rawActive, rawArchived, entity, api]);
 
   const allRecords = useMemo(
     () => rawActive.filter((r) => !pending.deleteIds.has(String(r.id))),
@@ -343,23 +368,38 @@ export function useVitalData({ entity, api, fetchJson, toBlob, showNotif }) {
   return { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, online };
 }
 
-/* ── background warm-up (called from OfflineContext) ── */
+/* ── background warm-up ── */
 
+/** Downloads both lists and their PDFs for offline use. Returns a cancel function or null. */
 export async function warmVitalCache(entity, api) {
   if (!isDbAvailable()) return null;
   await refreshAllOfflineCredentials();
   try {
-    const get = async (u) => {
-      const r = await fetch(u, { credentials: 'include' });
+    const get = async (path) => {
+      const r = await apiFetch(`${api}/${path}`);
       if (!r.ok) throw new Error(String(r.status));
       const d = await r.json();
       return Array.isArray(d) ? d : [];
     };
-    const [active, archived] = await Promise.all([get(`${api}/records`), get(`${api}/archived`)]);
-    await saveList(entity, 'records', active);
-    await saveList(entity, 'archived', archived);
-    return startPdfPrefetch(entity, [...active, ...archived].map((r) => r.id), { api });
+    const [active, archived] = await Promise.all([get("records"), get("archived")]);
+    await saveList(entity, "records", active);
+    await saveList(entity, "archived", archived);
+    return startPdfPrefetch(entity, [...active, ...archived].map((r) => r.id), api);
   } catch {
     return null;
   }
+}
+
+/** Mount in a component that always renders after login. Replaces useBirthWarmup. */
+export function useVitalWarmup(entity, api, online) {
+  useEffect(() => {
+    if (!online) return undefined;
+    let cancel = null;
+    let alive = true;
+    warmVitalCache(entity, api).then((c) => {
+      if (alive) cancel = c;
+      else c?.();
+    });
+    return () => { alive = false; cancel?.(); };
+  }, [entity, api, online]);
 }

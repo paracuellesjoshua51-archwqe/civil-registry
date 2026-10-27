@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { isOnline } from "../offline/connectivityService";
+import { isDbAvailable } from "../offline/connectivityService";
 
 const MAX_UPLOAD = 1000;
 const QUEUE_RENDER_LIMIT = 200;
@@ -294,7 +294,7 @@ export default function UploadRecordsModal({
       };
 
       try {
-        if (!isOnline()) { await saveOffline(); continue; }
+        if (!isDbAvailable()) { await saveOffline(); continue; }
         const data = await uploadWithRetry(`${api}/records`, item.file, (pct) => patch({ progress: pct }));
         saved.push(data);
         patch({ status: "done", progress: 100 });

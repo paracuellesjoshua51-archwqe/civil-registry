@@ -1,5 +1,6 @@
 import React, { memo } from "react";
 import { useOffline } from "../context/OfflineContext";
+import { SYNC_MODULE_LABEL, SYNC_MODULE_PERMISSIONS } from "../offline/syncScope";
 import UserAvatar from "./UserAvatar";
 import "./Sidebar.css";
 
@@ -7,30 +8,6 @@ import "./Sidebar.css";
 const formatBadgeCount = (n) => (n > 99 ? "99+" : String(n));
 
 const ACTIVATE_KEYS = new Set(["Enter", " "]);
-
-// Permissions that make each sync module visible. Mirrors ENTITY_PERMISSIONS in
-// src/offline/syncScope.js, so the badge only counts modules this user can use.
-const SYNC_MODULE_PERMISSIONS = {
-  birth: ["birth_verification", "birth_archive_uploader"],
-  marriage: ["marriage_verification", "marriage_archive_uploader"],
-  death: ["death_verification", "death_archive_uploader"],
-  tracking: [
-    "document_tracking",
-    "document_stage_registration",
-    "document_stage_civil_registrar",
-    "document_stage_posting_period",
-    "document_stage_records_division",
-    "document_stage_registry_number",
-    "document_stage_releasing",
-  ],
-};
-
-const SYNC_MODULE_LABEL = {
-  birth: "Birth",
-  marriage: "Marriage",
-  death: "Death",
-  tracking: "Document Tracking",
-};
 
 function MenuIcon({ src, className }) {
   return (
@@ -142,20 +119,22 @@ const Sidebar = ({
 
       <div className="sidebar-body">
         <div className="sidebar-user">
-          {showLabels && (
-            <button
-              type="button"
-              className="sidebar-user-button"
-              onClick={onOpenProfile}
-              aria-label={`Edit profile for ${displayName}`}
-            >
-              <UserAvatar src={avatarSrc} name={displayName} size={56} />
-              <span className="sidebar-user-name">{displayName}</span>
-              <span className="sidebar-user-role">
-                {isAdminUser ? "Administrator" : "Active"}
-              </span>
-            </button>
-          )}
+          <button
+            type="button"
+            className="sidebar-user-button"
+            onClick={onOpenProfile}
+            aria-label={`Edit profile for ${displayName}`}
+          >
+            <UserAvatar src={avatarSrc} name={displayName} size={56} />
+            {showLabels && (
+              <>
+                <span className="sidebar-user-name">{displayName}</span>
+                <span className="sidebar-user-role">
+                  {isAdminUser ? "Administrator" : "Active"}
+                </span>
+              </>
+            )}
+          </button>
         </div>
 
         <ul className="sidebar-menu" role="menu">

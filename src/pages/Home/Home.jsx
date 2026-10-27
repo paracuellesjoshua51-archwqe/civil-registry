@@ -29,7 +29,6 @@ import { fetchSnapshot, saveRequestStatus } from "../../services/requestSnapshot
 import { pushToast } from "../../services/toastService";
 import { avatarUrl, fetchProfile } from "../../services/profileService";
 
-import logoImg from "../../assets/icons/sidebar/scc.png";
 import dashboardIcon from "../../assets/icons/sidebar/dashboard.png";
 import vitalIcon from "../../assets/icons/sidebar/vital.png";
 import heatmapsIcon from "../../assets/icons/sidebar/heatmap.png";
@@ -37,6 +36,8 @@ import trackingIcon from "../../assets/icons/sidebar/tracking.png";
 import accountIcon from "../../assets/icons/sidebar/account.png";
 import logoutIcon from "../../assets/icons/sidebar/logout.png";
 import syncIcon from "../../assets/icons/sidebar/sync.png";
+
+const logoImg = "/scc.png";
 
 
 const MENU_KEYS = {

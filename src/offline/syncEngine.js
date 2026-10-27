@@ -9,15 +9,23 @@ import { isEntityAllowed } from './syncScope';
 
 // ---------- Backend base URL ----------
 
-const DEFAULT_API_BASE = 'https://civil-registry-backend.onrender.com';
+const DEFAULT_API_BASE = '';
 
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE)
-  .replace(/\/+$/, '');
+function resolveApiBase() {
+  const base = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(/\/+$/, '');
+  if (import.meta.env.PROD && !base) {
+    throw new Error('VITE_API_BASE_URL is required in production builds.');
+  }
+  return base;
+}
+
+export const API_BASE = resolveApiBase();
 
 // Queued items can carry a host from the build that created them (a placeholder,
 // an old Render URL, or 127.0.0.1). Keep only the path and query, and always send
 // to the API_BASE of the build that is running now.
 function normalizeUrl(url) {
+  if (!API_BASE) return url;
   try {
     const u = new URL(url, API_BASE);
     return `${API_BASE}${u.pathname}${u.search}`;
@@ -98,8 +106,8 @@ async function replay(op) {
 
 // Returns a summary for the run, or null if it could not run.
 //   succeeded / failed      : items that finished this run
-//   paused / pausedEntities : modules that hit a server error and wait for retry
-//   skippedOtherLogin       : items queued by a different login (left untouched)
+//   pausedEntities           : modules that hit a server error and wait for retry
+//   skippedOtherLogin        : items queued by a different login (left untouched)
 // A network loss stops the whole run and returns { error }.
 // Never sends anything when no user is logged in.
 export async function runSync() {
@@ -108,7 +116,7 @@ export async function runSync() {
   clearTimeout(retryTimer);
   const summary = {
     succeeded: 0, failed: 0,
-    paused: 0, pausedEntities: [],
+    pausedEntities: [],
     skippedOtherLogin: 0,
   };
   const paused = new Set(); // modules paused by a server error in this run
@@ -195,7 +203,6 @@ export async function runSync() {
       if (done % PAUSE_EVERY === 0) await sleep(PAUSE_MS);
     }
 
-    summary.paused = paused.size;
     summary.pausedEntities = [...paused];
 
     if (paused.size) {

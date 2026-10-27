@@ -1,5 +1,5 @@
 import { getDB } from './db';
-import { isOnline, markOnline } from './connectivityService';
+import { isDbAvailable, markOnline } from './connectivityService';
 import { enqueue, newOpId } from './outboxQueue';
 import { saveFile } from './fileStore';
 
@@ -25,7 +25,7 @@ export async function cachedGetJson(url, { entity = 'http', signal, maxEntries =
 
   // forceNetwork: try the server even if the app currently thinks it is offline
   // (used by Retry and by the auto-recovery check).
-  if (isOnline() || forceNetwork) {
+  if (isDbAvailable() || forceNetwork) {
     try {
       const res = await fetch(url, { signal, credentials: 'include' });
       let body = null;
@@ -62,7 +62,7 @@ export async function patchCachedJson(url, updater) {
 /** JSON write. Sent now if online, otherwise queued. */
 export async function mutate({ entity, label, method = 'POST', url, json = null }) {
   const opId = newOpId(); // same id on the direct try and the queued retry = never applied twice
-  if (isOnline()) {
+  if (isDbAvailable()) {
     try {
       const res = await fetch(url, {
         method,

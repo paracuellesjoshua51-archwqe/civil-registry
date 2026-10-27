@@ -17,6 +17,28 @@ export const ENTITY_PERMISSIONS = {
   ],
 };
 
+export const SYNC_MODULE_PERMISSIONS = {
+  birth: ['birth_verification', 'birth_archive_uploader'],
+  marriage: ['marriage_verification', 'marriage_archive_uploader'],
+  death: ['death_verification', 'death_archive_uploader'],
+  tracking: [
+    'document_tracking',
+    'document_stage_registration',
+    'document_stage_civil_registrar',
+    'document_stage_posting_period',
+    'document_stage_records_division',
+    'document_stage_registry_number',
+    'document_stage_releasing',
+  ],
+};
+
+export const SYNC_MODULE_LABEL = {
+  birth: 'Birth',
+  marriage: 'Marriage',
+  death: 'Death',
+  tracking: 'Document Tracking',
+};
+
 // null = everything (admin). A Set = only those entities.
 export function getAllowedEntities(permissions, isAdmin) {
   if (isAdmin || (Array.isArray(permissions) && permissions.includes('*'))) return null;
