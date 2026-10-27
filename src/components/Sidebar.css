@@ -1,9 +1,3 @@
-/* ===== Sidebar: single source of truth for all sidebar styles =====
-   Colors come from the theme tokens in index.css. No hardcoded colors here. */
-
-/* ---------- Sidebar container ----------
-   Sized from the top and bottom edges of the viewport, not 100vh, so it
-   follows the real window at every text size. The whole sidebar scrolls. */
 
 .sidebar {
   width: var(--sidebar-width);
