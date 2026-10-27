@@ -25,4 +25,4 @@ backend/*.spec
 .DS_Store
 Thumbs.db
 .vscode/
-.idea/
+.idea/venv/
