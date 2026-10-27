@@ -10,7 +10,7 @@ const normalize = (s = "") =>
     .replace(/\s+/g, " ")
     .trim();
 
-// Levenshtein-based similarity between two words (0..1)
+
 const wordSimilarity = (a, b) => {
   if (a === b) return 1;
   if (!a || !b) return 0;
