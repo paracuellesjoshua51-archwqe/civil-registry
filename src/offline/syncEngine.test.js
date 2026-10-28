@@ -64,6 +64,14 @@ vi.mock("./connectivityService", () => ({
 
 import { runSync } from "./syncEngine";
 
+async function runWithEmptyApiBase(operation) {
+  vi.stubEnv("VITE_API_BASE_URL", "");
+  vi.resetModules();
+  const syncEngine = await import("./syncEngine");
+  expect(syncEngine.API_BASE).toBe("");
+  return operation(syncEngine.runSync);
+}
+
 describe("syncEngine", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -110,5 +118,72 @@ describe("syncEngine", () => {
 
     expect(mocks.markConflict).toHaveBeenCalledWith(expect.objectContaining({ opId: "op-1" }), "duplicate record");
     expect(summary.failed).toBe(1);
+  });
+
+  it("strips an old host from queued absolute URLs when API_BASE is empty", async () => {
+    mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
+      opId: "old-host-op",
+      entity: "birth",
+      method: "POST",
+      url: "https://old-backend.example/api/records?source=offline",
+      json: { ok: true },
+      attempts: 0,
+      createdAt: Date.now(),
+    }] : []);
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runWithEmptyApiBase((runSyncWithEmptyBase) => runSyncWithEmptyBase());
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/records?source=offline");
+  });
+
+  it("preserves relative queued URLs when API_BASE is empty", async () => {
+    mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
+      opId: "relative-url-op",
+      entity: "birth",
+      method: "POST",
+      url: "/api/records?source=offline",
+      json: { ok: true },
+      attempts: 0,
+      createdAt: Date.now(),
+    }] : []);
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runWithEmptyApiBase((runSyncWithEmptyBase) => runSyncWithEmptyBase());
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/records?source=offline");
+  });
+
+  it("counts a server failure when it reaches the retry limit", async () => {
+    mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
+      opId: "terminal-failure-op",
+      entity: "birth",
+      method: "POST",
+      url: "/api/records",
+      json: { ok: true },
+      attempts: 7,
+      createdAt: Date.now(),
+    }] : []);
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 503,
+      json: async () => ({ error: "Server busy" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const summary = await runSync();
+
+    expect(summary.failed).toBe(1);
+    expect(mocks.updateOp).toHaveBeenCalledWith(
+      "terminal-failure-op",
+      expect.objectContaining({ status: "failed", attempts: 8 }),
+    );
   });
 });

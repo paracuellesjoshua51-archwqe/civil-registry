@@ -8,7 +8,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getDB } from "./db";
 import { isDbAvailable, subscribeDb, checkNow } from "./connectivityService";
-import { enqueue, listByStatus, subscribeOutbox, removeOp } from "./outboxQueue";
+import {
+  assertSecureOfflineQueue, enqueue, listByStatus, subscribeOutbox, removeOp,
+} from "./outboxQueue";
 import { saveFile, getFile } from "./fileStore";
 import { subscribeSyncState } from "./syncEngine";
 import useOnlineStatus from "../hooks/useOnlineStatus";
@@ -100,6 +102,7 @@ export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
 /* ── outbox helpers ── */
 
 export async function queueUpload(entity, url, file) {
+  assertSecureOfflineQueue(entity, { hasFile: true });
   const fileId = await saveFile(file);
   return enqueue({
     entity, label: `Upload ${file.name}`, method: "POST", url, fileId, fileField: "file",

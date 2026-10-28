@@ -1,6 +1,7 @@
 import { getDB } from './db';
 import { deleteFile } from './fileStore';
 import { encryptJSON } from './secureStore';
+import { pushToast } from '../services/toastService';
 
 // status: pending | syncing | failed | conflict | synced
 const listeners = new Set();
@@ -8,18 +9,57 @@ const notify = () => listeners.forEach((fn) => fn());
 export const subscribeOutbox = (fn) => (listeners.add(fn), () => listeners.delete(fn));
 
 export const newOpId = () =>
-  crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const SYNCED_KEEP = 500;
 const cryptoAvailable = () => !!globalThis.crypto?.subtle; // false on plain-http LAN addresses
+const SENSITIVE_ENTITIES = new Set(['birth', 'death', 'marriage', 'tracking']);
+const SENSITIVE_FIELD_TOKENS = [
+  'name', 'person', 'birth', 'death', 'dob', 'parent', 'mother', 'father',
+  'child', 'spouse', 'husband', 'wife', 'address', 'email', 'phone', 'mobile',
+  'contact', 'payment', 'amount', 'fee', 'ornumber', 'reference', 'tin',
+  'passport', 'identity', 'nationalid', 'registry', 'controlno', 'requester',
+  'signature', 'record',
+];
 const currentUser = () => {
   try { return sessionStorage.getItem('username'); } catch { return null; }
 };
 
+function containsSensitiveFields(value) {
+  if (Array.isArray(value)) return value.some(containsSensitiveFields);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, nested]) => {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return SENSITIVE_FIELD_TOKENS.some((token) => normalizedKey.includes(token))
+      || containsSensitiveFields(nested);
+  });
+}
+
+export function assertSecureOfflineQueue(entity, { json = null, fileId = null, hasFile = false } = {}) {
+  if (cryptoAvailable()) return;
+
+  const isSensitive = SENSITIVE_ENTITIES.has(String(entity || '').toLowerCase())
+    || Boolean(fileId || hasFile)
+    || containsSensitiveFields(json);
+  if (!isSensitive) return;
+
+  const message = 'This sensitive change cannot be queued offline because secure encryption is unavailable. Use a secure connection and try again.';
+  pushToast({
+    title: 'Secure offline storage required',
+    message,
+    success: false,
+    duration: 7000,
+  });
+  throw new Error(message);
+}
+
 export async function enqueue({ opId, entity, label, method, url, json = null, fileId = null, fileField = 'file' }) {
+  assertSecureOfflineQueue(entity, { json, fileId });
   const db = await getDB();
   // Sensitive JSON (names, parents, payments) is encrypted at rest when the
-  // browser allows it. The key is non-extractable and stored in IndexedDB.
+  // browser allows it. Non-sensitive values may remain plain on insecure origins.
   let storedJson = null;
   if (json) {
     storedJson = cryptoAvailable() ? { __enc: await encryptJSON(json) } : json;

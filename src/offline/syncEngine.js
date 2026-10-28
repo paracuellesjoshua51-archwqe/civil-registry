@@ -25,7 +25,14 @@ export const API_BASE = resolveApiBase();
 // an old Render URL, or 127.0.0.1). Keep only the path and query, and always send
 // to the API_BASE of the build that is running now.
 function normalizeUrl(url) {
-  if (!API_BASE) return url;
+  if (!API_BASE) {
+    try {
+      const absoluteUrl = new URL(url);
+      return `${absoluteUrl.pathname}${absoluteUrl.search}`;
+    } catch {
+      return url;
+    }
+  }
   try {
     const u = new URL(url, API_BASE);
     return `${API_BASE}${u.pathname}${u.search}`;
@@ -183,11 +190,13 @@ export async function runSync() {
         summary.failed += 1;
       } else if (s >= 500 || s === 408 || s === 429) {
         const attempts = op.attempts + 1;
+        const failed = attempts >= MAX_ATTEMPTS;
         await updateOp(op.opId, {
-          status: attempts >= MAX_ATTEMPTS ? 'failed' : 'pending',
+          status: failed ? 'failed' : 'pending',
           attempts,
           lastError: msg || `Server error (${s})`,
         });
+        if (failed) summary.failed += 1;
         paused.add(op.entity);
         serverError = serverError || `${op.entity}: server error (${s})`;
       } else if (s === 409) {

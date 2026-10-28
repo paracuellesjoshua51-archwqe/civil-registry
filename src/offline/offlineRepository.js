@@ -1,6 +1,6 @@
 import { getDB } from './db';
 import { isDbAvailable, markOnline } from './connectivityService';
-import { enqueue, newOpId } from './outboxQueue';
+import { assertSecureOfflineQueue, enqueue, newOpId } from './outboxQueue';
 import { saveFile } from './fileStore';
 
 export const isNetworkError = (e) =>
@@ -83,6 +83,7 @@ export async function mutate({ entity, label, method = 'POST', url, json = null 
 
 /** Save a PDF upload to send later. */
 export async function queueUpload({ entity, label, url, file, fileField = 'file' }) {
+  assertSecureOfflineQueue(entity, { hasFile: true });
   const fileId = await saveFile(file);
   return enqueue({ entity, label, method: 'POST', url, fileId, fileField });
 }

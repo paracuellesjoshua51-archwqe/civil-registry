@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import "../../pages/VitalRecords/VitalRecords.css";
 import "./VitalRegistry.css";
 
@@ -18,7 +18,7 @@ import {
 
 import { useShowNotif, useViewport } from "./hooks";
 import {
-  FEE, formatDate, formatTodayLong, matchesWords, matchesLastName,
+  FEE, formatDate, matchesWords, matchesLastName,
 } from "./vitalFormat";
 import { IconArchive, IconFolder, IconGrid, IconSearch, IconUpload, IconDocument } from "./icons";
 import { ConfirmModal, NegCertInfoModal, PdfModal, PasswordGate } from "./vitalModals";
