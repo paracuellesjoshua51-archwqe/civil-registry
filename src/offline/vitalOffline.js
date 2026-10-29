@@ -21,8 +21,31 @@ import { fetchJsonWithRetry } from "../utils/fetchJsonWithRetry";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pdfKey = (entity, id) => `vr-${entity}-pdf:${id}`;
+const missingPdfKey = (entity, id) => `vr-${entity}-pdf-missing:${id}`;
 const NUMERIC_ID = /^\d+$/;
 const pdfPrefetchInFlight = new Map();
+const attemptedPdfPrefetches = new Set();
+const warnedMissingPdfs = new Set();
+const MISSING_PDF_TTL_MS = 24 * 60 * 60 * 1000;
+const PDF_PREFETCH_BATCH_SIZE = 2;
+const PDF_PREFETCH_BATCH_DELAY_MS = 250;
+let activePdfPrefetches = 0;
+const pdfPrefetchWaiters = [];
+
+async function withPdfPrefetchSlot(task) {
+  if (activePdfPrefetches >= PDF_PREFETCH_BATCH_SIZE) {
+    await new Promise((resolve) => pdfPrefetchWaiters.push(resolve));
+  } else {
+    activePdfPrefetches += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = pdfPrefetchWaiters.shift();
+    if (next) next();
+    else activePdfPrefetches -= 1;
+  }
+}
 
 export function pdfPrefetchKey(records) {
   return records
@@ -69,9 +92,24 @@ async function hasCachedPdf(entity, id) {
   }
 }
 
+async function hasRecentMissingPdf(entity, id) {
+  const db = await getDB();
+  const marker = await db.get("cache", missingPdfKey(entity, id));
+  return Boolean(marker && Date.now() - marker.savedAt < MISSING_PDF_TTL_MS);
+}
+
+async function cacheMissingPdf(entity, id, reason) {
+  const db = await getDB();
+  await db.put("cache", {
+    key: missingPdfKey(entity, id),
+    entity: `vr-${entity}-pdf-missing`,
+    reason,
+    savedAt: Date.now(),
+  });
+}
+
 /**
- * Downloads every PDF not yet on this device, one at a time, with a pause
- * between each. Returns a cancel function.
+ * Downloads missing PDFs in small batches. Returns a cancel function.
  */
 export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
   let cancelled = false;
@@ -82,45 +120,80 @@ export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
     let sharedRequests = 0;
     let requested = 0;
     let notSaved = 0;
-    for (const id of new Set(ids)) {
+    const records = [...new Set(ids)]
+      .filter((id) => NUMERIC_ID.test(String(id)))
+      .map((id) => ({ id, key: `${entity}:${id}` }))
+      .filter(({ key }) => !attemptedPdfPrefetches.has(key));
+
+    for (let offset = 0; offset < records.length; offset += PDF_PREFETCH_BATCH_SIZE) {
       if (cancelled || !isDbAvailable()) break;
-      if (!NUMERIC_ID.test(String(id))) continue;   // skip queued "offline-…" rows
-      let ownRequest = null;
-      try {
+      const batch = records.slice(offset, offset + PDF_PREFETCH_BATCH_SIZE);
+      const results = await Promise.allSettled(batch.map(async ({ id, key }) => {
         const cacheKey = pdfKey(entity, id);
         if (await hasCachedPdf(entity, id)) {
           cacheHits += 1;
-          continue;
+          attemptedPdfPrefetches.add(key);
+          return;
         }
-        let pending = pdfPrefetchInFlight.get(cacheKey);
-        const shared = Boolean(pending);
-        if (!pending) {
-          pending = (async () => {
-            // ?prefetch=1 tells the server not to write a VIEW audit entry.
-            const res = await apiFetch(`${api}/records/${id}?prefetch=1`);
-            if (res.status >= 500) throw new Error(String(res.status));
-            if (!res.ok) return "not-saved";
-            const data = await res.json();
-            const blob = createPdfBlobFromData(data?.pdf_data);
-            return blob && await cachePdf(entity, id, blob) ? "saved" : "not-saved";
-          })();
-          pdfPrefetchInFlight.set(cacheKey, pending);
-          ownRequest = pending;
+        if (await hasRecentMissingPdf(entity, id)) {
+          attemptedPdfPrefetches.add(key);
+          return;
         }
-        if (shared) sharedRequests += 1;
-        else requested += 1;
-        const result = await pending;
-        if (result === "not-saved") notSaved += 1;
-        failures = 0;
-      } catch {
-        if (++failures >= 3) break;   // server unreachable: stop, retry later
-      } finally {
-        const cacheKey = pdfKey(entity, id);
-        if (ownRequest && pdfPrefetchInFlight.get(cacheKey) === ownRequest) {
-          pdfPrefetchInFlight.delete(cacheKey);
+        if (attemptedPdfPrefetches.has(key)) return;
+
+        const existing = pdfPrefetchInFlight.get(cacheKey);
+        if (existing) {
+          sharedRequests += 1;
+          await existing;
+          return;
         }
+
+        attemptedPdfPrefetches.add(key);
+        const request = withPdfPrefetchSlot(async () => {
+          // ?prefetch=1 tells the server not to write a VIEW audit entry.
+          const res = await apiFetch(`${api}/records/${id}?prefetch=1`);
+          if (res.status >= 500) throw new Error(String(res.status));
+          if (!res.ok) return "not-saved";
+          const data = await res.json();
+          if (!data?.pdf_data) {
+            const reason = data?.pdf_error || "PDF data is missing from the server response.";
+            await cacheMissingPdf(entity, id, reason);
+            if (!warnedMissingPdfs.has(key)) {
+              warnedMissingPdfs.add(key);
+              console.warn("[vitalOffline] PDF unavailable", { entity, id, pdf_error: reason });
+            }
+            return "missing";
+          }
+          const blob = createPdfBlobFromData(data.pdf_data);
+          if (!blob) {
+            const reason = data?.pdf_error || "PDF data could not be decoded.";
+            await cacheMissingPdf(entity, id, reason);
+            if (!warnedMissingPdfs.has(key)) {
+              warnedMissingPdfs.add(key);
+              console.warn("[vitalOffline] PDF unavailable", { entity, id, pdf_error: reason });
+            }
+            return "missing";
+          }
+          return await cachePdf(entity, id, blob) ? "saved" : "not-saved";
+        });
+        pdfPrefetchInFlight.set(cacheKey, request);
+        requested += 1;
+        try {
+          const result = await request;
+          if (result === "not-saved") notSaved += 1;
+          return result;
+        } finally {
+          if (pdfPrefetchInFlight.get(cacheKey) === request) {
+            pdfPrefetchInFlight.delete(cacheKey);
+          }
+        }
+      }));
+
+      failures += results.filter((result) => result.status === "rejected").length;
+      if (failures >= 3 || cancelled) break;
+      if (offset + PDF_PREFETCH_BATCH_SIZE < records.length) {
+        await sleep(Math.max(gapMs, PDF_PREFETCH_BATCH_DELAY_MS));
       }
-      await sleep(gapMs);
     }
     if (import.meta.env.DEV && ids.length) {
       console.debug("[vitalOffline] PDF prefetch", {
