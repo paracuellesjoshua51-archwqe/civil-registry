@@ -12,6 +12,7 @@ import { usePermissions } from './PermissionContext';
 import { pushToast } from '../services/toastService';
 import useOnlineStatus from '../hooks/useOnlineStatus';
 import { refreshSnapshot } from '../offline/snapshotStore';
+import useHeartbeat from '../hooks/useHeartbeat';
 
 const OfflineContext = createContext(null);
 
@@ -20,6 +21,8 @@ const EMPTY_COUNTS = { pending: 0, syncing: 0, failed: 0, conflict: 0, synced: 0
 const EMPTY_MODULE = { pending: 0, waiting: 0, syncing: 0, failed: 0, conflict: 0, synced: 0, total: 0 };
 const WARMUP_INTERVAL_MS = 10 * 60 * 1000;
 const SNAPSHOT_API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+let lastWarmupAt = null;
+let warmupInFlight = null;
 
 async function requestPersistence() {
   try {
@@ -62,6 +65,8 @@ export function OfflineProvider({ children }) {
     Object.fromEntries(MODULES.map((m) => [m, EMPTY_MODULE]))
   );
   const lastNotified = useRef(null);
+
+  useHeartbeat(Boolean(authenticated));
 
   const refreshCounts = useCallback(async () => {
     try {
@@ -166,29 +171,43 @@ export function OfflineProvider({ children }) {
       cancels = [];
     };
 
-    const run = async () => {
-      if (!alive) return;
+    const run = () => {
+      if (!alive) return Promise.resolve();
+      if (warmupInFlight) return warmupInFlight;
+      if (lastWarmupAt !== null && Date.now() - lastWarmupAt < WARMUP_INTERVAL_MS) {
+        return Promise.resolve();
+      }
+
+      lastWarmupAt = Date.now();
       stopDownloads();
 
-      await refreshTrackingPersonnel();
-      if (!alive) return;
-
-      await refreshAllOfflineCredentials();
-      if (!alive) return;
-
-      const birthCancel = await warmVitalCache('birth', `${API_BASE}/api/birth`);
-      if (!alive) { birthCancel?.(); return; }
-      if (birthCancel) cancels.push(birthCancel);
-
-      for (const entity of ['marriage', 'death']) {
+      const task = (async () => {
+        await refreshTrackingPersonnel();
         if (!alive) return;
-        const c = await warmVitalCache(entity, `${API_BASE}/api/${entity}`);
-        if (c) cancels.push(c);
-      }
+
+        await refreshAllOfflineCredentials();
+        if (!alive) return;
+
+        const birthCancel = await warmVitalCache('birth', `${API_BASE}/api/birth`);
+        if (!alive) { birthCancel?.(); return; }
+        if (birthCancel) cancels.push(birthCancel);
+
+        for (const entity of ['marriage', 'death']) {
+          if (!alive) return;
+          const c = await warmVitalCache(entity, `${API_BASE}/api/${entity}`);
+          if (c) cancels.push(c);
+        }
+      })();
+      warmupInFlight = task;
+      task.then(
+        () => { if (warmupInFlight === task) warmupInFlight = null; },
+        () => { if (warmupInFlight === task) warmupInFlight = null; },
+      );
+      return task;
     };
 
     const safeRun = () => {
-      run().catch((err) => console.warn('[OfflineContext] warm-up failed:', err));
+      void run().catch((err) => console.warn('[OfflineContext] warm-up failed:', err));
     };
 
     safeRun();

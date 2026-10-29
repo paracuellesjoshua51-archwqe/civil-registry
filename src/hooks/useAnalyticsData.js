@@ -17,7 +17,6 @@ const ENDPOINTS = {
 };
 
 const STALE_MS = 60_000;
-const RECOVERY_POLL_MS = 6000; // while showing saved data, try the server this often
 const memCache = new Map();
 const NOT_SAVED = /not saved on this device|no snapshot is available|connect once to download offline data/i;
 
@@ -33,8 +32,8 @@ const getCacheKey = () => {
  * Loads every dashboard endpoint from the live API, falling back to the
  * per-user snapshot only when a live request fails.
  *
- * While saved data is shown, it keeps trying the server in the background and
- * switches back to live data by itself (no reload, no Retry click needed).
+ * A saved snapshot's timestamp is retained for the UI; live requests are retried
+ * when connectivity changes or the user explicitly refreshes.
  */
 export default function useAnalyticsData() {
   const [data, setData] = useState(() => memCache.get(getCacheKey())?.data || {});
@@ -44,7 +43,6 @@ export default function useAnalyticsData() {
     () => memCache.get(getCacheKey())?.stale || { fromCache: false, cachedAt: null }
   );
   const acRef = useRef(null);
-  const inFlight = useRef(false);
 
   const fetchAll = useCallback(async ({ force = false } = {}) => {
     const key = getCacheKey();
@@ -61,7 +59,6 @@ export default function useAnalyticsData() {
     acRef.current?.abort();
     const controller = new AbortController();
     acRef.current = controller;
-    inFlight.current = true;
 
     if (!mem?.data?.summary) setLoading(true);
 
@@ -122,7 +119,7 @@ export default function useAnalyticsData() {
       }
       setLoading(false);
     } finally {
-      if (acRef.current === controller) inFlight.current = false;
+      if (acRef.current === controller) acRef.current = null;
     }
   }, []);
 
@@ -139,15 +136,6 @@ export default function useAnalyticsData() {
       }),
     [fetchAll]
   );
-
-  // Showing saved data -> keep checking the server until it answers again.
-  useEffect(() => {
-    if (!stale.fromCache) return undefined;
-    const id = setInterval(() => {
-      if (!inFlight.current) fetchAll({ force: true });
-    }, RECOVERY_POLL_MS);
-    return () => clearInterval(id);
-  }, [stale.fromCache, fetchAll]);
 
   const refetch = useCallback(() => fetchAll({ force: true }), [fetchAll]);
 

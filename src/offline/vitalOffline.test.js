@@ -73,6 +73,46 @@ describe("vitalOffline.loadPdfForRecord", () => {
     expect(result).toBe(cached);
   });
 
+  it("skips PDF prefetch when the PDF is already in IndexedDB", async () => {
+    mocks.isDbAvailable.mockReturnValue(true);
+    mocks.mockDb.getKey.mockResolvedValue("vr-birth-pdf:42");
+
+    vitalOffline.startPdfPrefetch("birth", [42], "", 0);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("shares an in-flight PDF prefetch across recreated record arrays", async () => {
+    mocks.isDbAvailable.mockReturnValue(true);
+    mocks.apiFetch.mockImplementation(() => new Promise((resolve) => {
+      mocks.resolvePdfRequest = resolve;
+    }));
+    mocks.createPdfBlobFromData.mockReturnValue(new Blob(["pdf"], { type: "application/pdf" }));
+
+    vitalOffline.startPdfPrefetch("birth", [42], "", 0);
+    vitalOffline.startPdfPrefetch("birth", [42], "", 0);
+    await vi.waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
+
+    mocks.resolvePdfRequest({
+      ok: true,
+      json: async () => ({ pdf_data: "data" }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("keeps the PDF prefetch key stable when records are recreated with the same IDs", () => {
+    const first = [{ id: 42 }, { id: 17 }];
+    const recreated = [{ id: 17 }, { id: 42 }];
+
+    expect(vitalOffline.pdfPrefetchKey(first)).toBe(vitalOffline.pdfPrefetchKey(recreated));
+  });
+
   it("falls back to cache when the server responds 503", async () => {
     const cached = new Blob(["server-down-fallback"], { type: "application/pdf" });
     mocks.isDbAvailable.mockReturnValue(true);

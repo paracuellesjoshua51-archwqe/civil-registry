@@ -4,6 +4,7 @@ import { readCredentials, writeCredentials, purgeLegacyLocalStorage } from './ar
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 const MAX_FAILS = 5;
 const LOCK_MS = 5 * 60 * 1000;
+const CREDENTIALS_TTL_MS = 10 * 60 * 1000;
 
 export const OFFLINE_MODULES = [
   'birth_record', 'archive_birth',
@@ -11,8 +12,22 @@ export const OFFLINE_MODULES = [
   'marriage_record', 'archive_marriage',
 ];
 
-let inFlight = null;
+const inFlight = new Map();
 let purged = false;
+const lastSuccessfulRefreshAt = new Map();
+
+function currentUsername() {
+  try {
+    return sessionStorage.getItem('username')?.trim().toLowerCase() || '__anonymous__';
+  } catch {
+    return '__anonymous__';
+  }
+}
+
+export function clearOfflineCredentialRefreshCache(username) {
+  const key = String(username || '').trim().toLowerCase();
+  if (key) lastSuccessfulRefreshAt.delete(key);
+}
 
 /**
  * ONLINE: download every module's bcrypt verifier and store it in IndexedDB.
@@ -20,8 +35,13 @@ let purged = false;
  * cannot erase a good verifier. Returns "saved" | "failed".
  */
 export function refreshAllOfflineCredentials() {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  const username = currentUsername();
+  const lastRefreshAt = lastSuccessfulRefreshAt.get(username);
+  if (lastRefreshAt && Date.now() - lastRefreshAt < CREDENTIALS_TTL_MS) {
+    return Promise.resolve('saved');
+  }
+  if (inFlight.has(username)) return inFlight.get(username);
+  const request = (async () => {
     try {
       if (!purged) { purgeLegacyLocalStorage(); purged = true; }
 
@@ -42,16 +62,18 @@ export function refreshAllOfflineCredentials() {
         creds.modules[m] = mods[m] ? { hash: mods[m], syncedAt: now } : null;
       }
       creds.syncedAt = now;
-      await writeCredentials(creds);
+      if (!await writeCredentials(creds)) return 'failed';
+      lastSuccessfulRefreshAt.set(username, now);
       return 'saved';
     } catch (e) {
       console.warn('[archivePassword] refresh failed:', e);
       return 'failed';
     } finally {
-      inFlight = null;
+      inFlight.delete(username);
     }
   })();
-  return inFlight;
+  inFlight.set(username, request);
+  return request;
 }
 
 // Backward-compatible: old callers pass (module, api); both are ignored.

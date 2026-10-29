@@ -1,6 +1,7 @@
 // src/offline/cache.js
 // Removes personal data for one user. The outbox remains bound to its owner.
 import { getDB } from './db'
+import { clearOfflineCredentialRefreshCache } from './archivePassword'
 
 const LOCAL_STORAGE_KEYS = ['dt_store_v4', 'dt_personnel_cache_v1']
 const SNAPSHOT_CACHE = 'vr-snapshot-v1'
@@ -47,6 +48,7 @@ export async function removeSnapshotsForOtherUsers(username) {
 
 export async function cacheClear(username) {
   await clearSnapshot(username)
+  clearOfflineCredentialRefreshCache(username)
   const db = await getDB()
 
   // Cached PDF copies.

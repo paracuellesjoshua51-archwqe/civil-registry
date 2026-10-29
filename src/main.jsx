@@ -15,6 +15,7 @@ import HomePreloader from "./routes/HomePreloader";
 import ToastContainer from "./components/ToastContainer";
 import GlobalRealtime from "./components/GlobalRealtime";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { installDevRequestCounter } from "./services/devRequestCounter";
 
 // Home is lazy-loaded so it gets its own chunk.
 // HomePreloader uses the same dynamic import to warm it up during idle time.
@@ -30,6 +31,7 @@ window.addEventListener("vite:preloadError", (event) => {
 // Apply the saved theme, zoom and contrast before the first render so the
 // app never paints in the wrong mode after a restart.
 applyStoredDisplayPrefs();
+installDevRequestCounter();
 
 const HomeFallback = () => (
   <div

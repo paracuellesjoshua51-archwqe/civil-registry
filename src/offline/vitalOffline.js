@@ -14,7 +14,6 @@ import {
 import { saveFile, getFile } from "./fileStore";
 import { subscribeSyncState } from "./syncEngine";
 import useOnlineStatus from "../hooks/useOnlineStatus";
-import { refreshAllOfflineCredentials } from "./archivePassword";
 import { applySnapshotMutation, readSnapshot, updateSnapshot } from "./snapshotStore";
 import { apiFetch } from "../services/apiFetch";
 import { createPdfBlobFromData } from "../utils/pdfUtils";
@@ -23,6 +22,15 @@ import { fetchJsonWithRetry } from "../utils/fetchJsonWithRetry";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pdfKey = (entity, id) => `vr-${entity}-pdf:${id}`;
 const NUMERIC_ID = /^\d+$/;
+const pdfPrefetchInFlight = new Map();
+
+export function pdfPrefetchKey(records) {
+  return records
+    .map((record) => String(record.id))
+    .filter((id) => NUMERIC_ID.test(id))
+    .sort()
+    .join(",");
+}
 
 /* ── PDF cache (IndexedDB) ── */
 
@@ -44,8 +52,10 @@ export async function cachePdf(entity, id, blob) {
       blob,
       savedAt: Date.now(),
     });
+    return true;
   } catch (e) {
     console.warn("[vitalOffline] cachePdf failed (storage full?):", e);
+    return false;
   }
 }
 
@@ -53,8 +63,9 @@ async function hasCachedPdf(entity, id) {
   try {
     const db = await getDB();
     return (await db.getKey("cache", pdfKey(entity, id))) !== undefined;
-  } catch {
-    return false;
+  } catch (error) {
+    console.warn("[vitalOffline] could not check the PDF cache:", error);
+    throw error;
   }
 }
 
@@ -67,24 +78,54 @@ export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
   (async () => {
     try { await navigator.storage?.persist?.(); } catch { /* optional */ }
     let failures = 0;
+    let cacheHits = 0;
+    let sharedRequests = 0;
+    let requested = 0;
+    let notSaved = 0;
     for (const id of new Set(ids)) {
-      if (cancelled || !isDbAvailable()) return;
+      if (cancelled || !isDbAvailable()) break;
       if (!NUMERIC_ID.test(String(id))) continue;   // skip queued "offline-…" rows
-      if (await hasCachedPdf(entity, id)) continue;
+      let ownRequest = null;
       try {
-        // ?prefetch=1 tells the server not to write a VIEW audit entry.
-        const res = await apiFetch(`${api}/records/${id}?prefetch=1`);
-        if (res.status >= 500) throw new Error(String(res.status));
-        if (res.ok) {
-          const data = await res.json();
-          const blob = createPdfBlobFromData(data?.pdf_data);
-          if (blob) await cachePdf(entity, id, blob);
+        const cacheKey = pdfKey(entity, id);
+        if (await hasCachedPdf(entity, id)) {
+          cacheHits += 1;
+          continue;
         }
+        let pending = pdfPrefetchInFlight.get(cacheKey);
+        const shared = Boolean(pending);
+        if (!pending) {
+          pending = (async () => {
+            // ?prefetch=1 tells the server not to write a VIEW audit entry.
+            const res = await apiFetch(`${api}/records/${id}?prefetch=1`);
+            if (res.status >= 500) throw new Error(String(res.status));
+            if (!res.ok) return "not-saved";
+            const data = await res.json();
+            const blob = createPdfBlobFromData(data?.pdf_data);
+            return blob && await cachePdf(entity, id, blob) ? "saved" : "not-saved";
+          })();
+          pdfPrefetchInFlight.set(cacheKey, pending);
+          ownRequest = pending;
+        }
+        if (shared) sharedRequests += 1;
+        else requested += 1;
+        const result = await pending;
+        if (result === "not-saved") notSaved += 1;
         failures = 0;
       } catch {
-        if (++failures >= 3) return;   // server unreachable: stop, retry later
+        if (++failures >= 3) break;   // server unreachable: stop, retry later
+      } finally {
+        const cacheKey = pdfKey(entity, id);
+        if (ownRequest && pdfPrefetchInFlight.get(cacheKey) === ownRequest) {
+          pdfPrefetchInFlight.delete(cacheKey);
+        }
       }
       await sleep(gapMs);
+    }
+    if (import.meta.env.DEV && ids.length) {
+      console.debug("[vitalOffline] PDF prefetch", {
+        entity, cacheHits, sharedRequests, requested, notSaved, failures, cancelled,
+      });
     }
   })();
   return () => { cancelled = true; };
@@ -383,11 +424,12 @@ export function useVitalData({ entity, api, showNotif }) {
   }, [fetchRecords, fetchArchived]);
 
   // Background-download PDFs so they open offline.
+  const prefetchKey = pdfPrefetchKey([...rawActive, ...rawArchived]);
   useEffect(() => {
     if (!online) return undefined;
-    const ids = [...rawActive, ...rawArchived].map((r) => r.id);
+    const ids = prefetchKey ? prefetchKey.split(",") : [];
     return ids.length ? startPdfPrefetch(entity, ids, api) : undefined;
-  }, [online, rawActive, rawArchived, entity, api]);
+  }, [online, prefetchKey, entity, api]);
 
   const allRecords = useMemo(
     () => rawActive.filter((r) => !pending.deleteIds.has(String(r.id))),
@@ -417,7 +459,6 @@ export function useVitalData({ entity, api, showNotif }) {
 /** Downloads both lists and their PDFs for offline use. Returns a cancel function or null. */
 export async function warmVitalCache(entity, api) {
   if (!isDbAvailable()) return null;
-  await refreshAllOfflineCredentials();
   try {
     const snapshot = await readSnapshot();
     if (!snapshot) return null;

@@ -3,6 +3,8 @@ import { removeSnapshotsForOtherUsers } from "./cache";
 
 const CACHE_NAME = "vr-snapshot-v1";
 const refreshInFlight = new Map();
+const refreshCompletedAt = new Map();
+const REFRESH_MIN_INTERVAL_MS = 60_000;
 const DASHBOARD_PATHS = [
   "/api/analytics/summary",
   "/api/analytics/records-by-year",
@@ -226,7 +228,16 @@ export function refreshSnapshot(apiBase = "") {
   if (!username) return Promise.reject(new Error("Sign in before refreshing the offline snapshot."));
   if (!refreshInFlight.has(username)) {
     const request = removeSnapshotsForOtherUsers(username)
-      .then(() => loadSnapshot(apiBase, username))
+      .then(() => readSnapshot(username))
+      .then((cached) => {
+        const savedAt = Date.parse(cached?._snapshot?.savedAt || "") || 0;
+        const lastRefresh = Math.max(refreshCompletedAt.get(username) || 0, savedAt);
+        if (cached && Date.now() - lastRefresh < REFRESH_MIN_INTERVAL_MS) return cached;
+        return loadSnapshot(apiBase, username).then((snapshot) => {
+          refreshCompletedAt.set(username, Date.now());
+          return snapshot;
+        });
+      })
       .finally(() => refreshInFlight.delete(username));
     refreshInFlight.set(username, request);
   }
@@ -281,8 +292,13 @@ async function loadSnapshot(apiBase = "", username) {
         [`${username}:active`]: documents,
       };
 
-      for (let offset = 0; offset < documents.length; offset += 10) {
-        const details = await Promise.allSettled(documents.slice(offset, offset + 10).map(async (document) => {
+      const documentsNeedingDetails = documents.filter((document) => {
+        const cached = documentDetails[String(document.id)];
+        return !cached
+          || String(cached.updated_at ?? "") !== String(document.updated_at ?? "");
+      });
+      for (let offset = 0; offset < documentsNeedingDetails.length; offset += 10) {
+        const details = await Promise.allSettled(documentsNeedingDetails.slice(offset, offset + 10).map(async (document) => {
           const detailResponse = await fetch(`${base}/api/documents/${document.id}`, {
             credentials: "include",
             cache: "no-store",

@@ -9,22 +9,35 @@ export default function useHeartbeat(enabled = true) {
   useEffect(() => {
     if (!enabled) return undefined;
 
+    let timer = null;
     const beat = () => {
-      if (document.hidden) return;
       fetch(`${API}/api/heartbeat`, { method: "POST", credentials: "include" })
-        .catch(() => {});
+        .catch((error) => {
+          if (import.meta.env.DEV) console.debug("[heartbeat] request failed:", error);
+        });
+    };
+
+    const stop = () => {
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    };
+
+    const start = () => {
+      if (document.hidden || timer !== null) return;
+      beat();
+      timer = setInterval(beat, HEARTBEAT_MS);
     };
 
     const onVisibility = () => {
-      if (!document.hidden) beat();
+      if (document.hidden) stop();
+      else start();
     };
 
-    beat();
-    const timer = setInterval(beat, HEARTBEAT_MS);
+    start();
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      clearInterval(timer);
+      stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [enabled]);

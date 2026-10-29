@@ -11,7 +11,6 @@ import { useDataChanged } from "../../hooks/useDataChanged";
 import { runBulkDelete } from "../../utils/bulkDelete";
 import { isDbAvailable, checkNow } from "../../offline/connectivityService";
 import { newOpId } from "../../offline/outboxQueue";
-import { refreshOfflineCredential } from "../../offline/archivePassword";
 import {
   useVitalData, loadPdfForRecord, deleteRecordSmart, queueUpload, queueTransaction,
 } from "../../offline/vitalOffline";
@@ -71,7 +70,7 @@ export default function VitalRegistry({ config, initialView = null }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  const { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, online, snapshotStatus } =
+  const { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, snapshotStatus } =
     useVitalData({ entity, api, showNotif });
 
   useRegisterRefresh(async () => {
@@ -82,10 +81,6 @@ export default function VitalRegistry({ config, initialView = null }) {
   useDataChanged(() => {
     if (isDbAvailable()) { fetchRecords(); fetchArchived(); }
   }, { tables: config.liveTables, debounceMs: 750 });
-
-  useEffect(() => {
-    if (online) refreshOfflineCredential(moduleKey, api);
-  }, [online, moduleKey, api]);
 
   /* ── search ── */
 

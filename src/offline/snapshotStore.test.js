@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applySnapshotMutation,
   readSnapshot,
+  refreshSnapshot,
   reconcileSyncedCreate,
   writeSnapshot,
 } from "./snapshotStore";
@@ -56,6 +57,67 @@ describe("snapshotStore", () => {
 
   it("returns null when no cached snapshot exists", async () => {
     await expect(readSnapshot()).resolves.toBeNull();
+  });
+
+  it("coalesces five refresh calls and enforces the per-user minimum interval", async () => {
+    entries = new Map();
+    sessionStorage.setItem("username", "snapshot-refresh-user");
+    const fetchMock = vi.fn(async (url) => {
+      const path = new URL(url, window.location.origin).pathname;
+      const body = path === "/api/offline/snapshot"
+        ? { data: {}, users: {} }
+        : path === "/api/documents" ? [] : {};
+      return {
+        ok: true,
+        headers: { get: () => '"etag"' },
+        json: async () => body,
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Promise.all(Array.from({ length: 5 }, () => refreshSnapshot("https://api.example.test")));
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+
+    await refreshSnapshot("https://api.example.test");
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    vi.unstubAllGlobals();
+  });
+
+  it("does not fetch cached document details when updated_at is unchanged", async () => {
+    entries = new Map();
+    sessionStorage.setItem("username", "document-refresh-user");
+    const updatedAt = "2026-10-28T12:00:00Z";
+    await writeSnapshot({
+      data: {
+        documents: {
+          "document-refresh-user:active": [{ id: 17, updated_at: updatedAt }],
+        },
+      },
+      users: {},
+      _snapshot: {
+        savedAt: "2020-01-01T00:00:00Z",
+        documentDetails: { 17: { id: 17, updated_at: updatedAt } },
+      },
+    });
+    const fetchMock = vi.fn(async (url) => {
+      const path = new URL(url, window.location.origin).pathname;
+      const body = path === "/api/offline/snapshot"
+        ? { data: {}, users: {} }
+        : path === "/api/documents" ? [{ id: 17, updated_at: updatedAt }] : {};
+      return {
+        ok: true,
+        headers: { get: () => null },
+        json: async () => body,
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await refreshSnapshot("https://api.example.test");
+
+    expect(fetchMock.mock.calls.some(([url]) =>
+      new URL(url, window.location.origin).pathname === "/api/documents/17"
+    )).toBe(false);
+    vi.unstubAllGlobals();
   });
 
   it("isolates snapshots when a browser is reopened by a different user", async () => {
