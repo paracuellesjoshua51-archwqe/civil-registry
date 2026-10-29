@@ -1,4 +1,5 @@
 import { readSnapshot } from "../snapshotStore";
+import { markOnline } from "../connectivityService";
 
 const MONTHS = [
   "", "January", "February", "March", "April", "May", "June",
@@ -152,16 +153,45 @@ function aggregate(path, data) {
 
 export async function getDashboardData(url, { signal } = {}) {
   if (signal?.aborted) throw new DOMException("The request was aborted.", "AbortError");
-  const snapshot = await readSnapshot();
-  if (!snapshot) {
-    const error = new Error("Connect once to download offline data.");
-    error.status = "no-snapshot";
-    throw error;
-  }
 
   const path = new URL(url, window.location.origin).pathname;
   const key = PATH_TO_KEY[path];
   if (!key) throw new Error(`Unsupported dashboard snapshot path: ${path}`);
+
+  let liveError;
+  try {
+    const response = await fetch(url, {
+      signal,
+      credentials: "include",
+      cache: "no-store",
+    });
+    markOnline(true);
+    if (!response.ok) {
+      throw Object.assign(new Error(`Server responded with ${response.status}`), {
+        http: response.status,
+      });
+    }
+    return {
+      data: await response.json(),
+      fromCache: false,
+      cachedAt: null,
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    if (error instanceof TypeError) markOnline(false);
+    liveError = error;
+    if (error.http && error.http < 500) throw error;
+  }
+
+  const snapshot = await readSnapshot();
+  if (!snapshot) {
+    if (liveError?.http) throw liveError;
+    const error = new Error("Connect once to download offline data.");
+    error.status = "no-snapshot";
+    error.cause = liveError;
+    throw error;
+  }
+
   const savedDashboard = snapshot._snapshot?.dashboard?.[path];
   let data;
   if (savedDashboard !== undefined) {

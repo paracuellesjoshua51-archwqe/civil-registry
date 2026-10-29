@@ -30,10 +30,8 @@ const getCacheKey = () => {
 };
 
 /**
- * Loads every dashboard endpoint through the offline repository:
- *  - online + server OK                      -> fresh data, saved to IndexedDB
- *  - offline / server can't reach Supabase   -> last saved data (stale.fromCache = true)
- *  - offline and nothing saved yet           -> friendly message
+ * Loads every dashboard endpoint from the live API, falling back to the
+ * per-user snapshot only when a live request fails.
  *
  * While saved data is shown, it keeps trying the server in the background and
  * switches back to live data by itself (no reload, no Retry click needed).
@@ -47,7 +45,6 @@ export default function useAnalyticsData() {
   );
   const acRef = useRef(null);
   const inFlight = useRef(false);
-  const lastLoadedAt = useRef(null); // when LIVE (not cached) data was last loaded
 
   const fetchAll = useCallback(async ({ force = false } = {}) => {
     const key = getCacheKey();
@@ -80,7 +77,6 @@ export default function useAnalyticsData() {
           try {
             const r = await getDashboardData(url, {
               signal: controller.signal,
-              forceNetwork: force, // Retry / auto-recovery: really try the server
             });
             okCount += 1;
             working[name] = r.data;
@@ -122,7 +118,6 @@ export default function useAnalyticsData() {
         memCache.set(key, { data: working, ts: 0, stale: nextStale });
       } else {
         setError(null);
-        if (!anyCache) lastLoadedAt.current = Date.now();
         memCache.set(key, { data: working, ts: Date.now(), stale: nextStale });
       }
       setLoading(false);
@@ -136,26 +131,11 @@ export default function useAnalyticsData() {
     return () => acRef.current?.abort();
   }, [fetchAll]);
 
-  // Connection changed:
-  //  - came back -> refresh right away
-  //  - lost      -> keep what is on screen but mark it as saved data, which
-  //                 shows the Offline banner and starts the recovery polling
-  //                 below (this is what was missing on the 2nd offline).
+  // Retry live requests whenever the connectivity monitor changes state.
   useEffect(
     () =>
-      subscribeConnectivity((nowOnline) => {
-        if (nowOnline) {
-          fetchAll({ force: true });
-          return;
-        }
-        const key = getCacheKey();
-        const mem = memCache.get(key);
-        const nextStale = {
-          fromCache: true,
-          cachedAt: lastLoadedAt.current || mem?.ts || Date.now(),
-        };
-        setStale(nextStale);
-        if (mem) memCache.set(key, { ...mem, ts: 0, stale: nextStale });
+      subscribeConnectivity(() => {
+        fetchAll({ force: true });
       }),
     [fetchAll]
   );

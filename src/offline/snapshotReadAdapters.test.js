@@ -15,7 +15,10 @@ vi.mock("./snapshotStore", () => ({
   updateSnapshot: mocks.updateSnapshot,
   applySnapshotMutation: mocks.applySnapshotMutation,
 }));
-vi.mock("./connectivityService", () => ({ isDbAvailable: mocks.isDbAvailable }));
+vi.mock("./connectivityService", () => ({
+  isDbAvailable: mocks.isDbAvailable,
+  markOnline: vi.fn(),
+}));
 vi.mock("./outboxQueue", () => ({
   enqueue: mocks.enqueue,
   listAll: mocks.listAll,

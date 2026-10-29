@@ -1,6 +1,5 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import useAnalyticsData from "../../hooks/useAnalyticsData";
-import useOnlineStatus from "../../hooks/useOnlineStatus";
 import { useRealtimeRefresh } from "../../hooks/useRealtimeRefresh";
 import { useRegisterRefresh } from "../../context/RefreshContext";
 import { Skeleton, SkeletonGrid } from "../../components/Skeleton";
@@ -811,9 +810,6 @@ const AnalyticsDashboard = ({ recordLinks = {} }) => {
   // error, missing sections render their empty state instead of a skeleton forever.
   const isPending = (key) => !error && data[key] === undefined;
 
-  const online = useOnlineStatus();
-  const [lastLiveAt, setLastLiveAt] = useState(null);
-  const [lastSeenData, setLastSeenData] = useState(null);
   const [tab, setTab] = useState("overview");
 
   // Realtime: i-clear ang backend cache, dayon i-refetch ang dashboard.
@@ -848,23 +844,8 @@ const AnalyticsDashboard = ({ recordLinks = {} }) => {
     pollMs: 120000,   // backstop kung dili mo-live ang socket
   });
 
-  // Remember when live (non-cached) data was last on screen, for the banner timestamp.
-  useEffect(() => {
-    if (
-      online &&
-      !stale?.fromCache &&
-      data.summary &&
-      !data.summary.__failed &&
-      data !== lastSeenData
-    ) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- record the new live data object
-      setLastSeenData(data);
-      setLastLiveAt(Date.now());
-    }
-  }, [online, stale?.fromCache, data, lastSeenData]);
-
-  const showOfflineBanner = !online || !!stale?.fromCache;
-  const savedAt = stale?.cachedAt || lastLiveAt;
+  const showOfflineBanner = stale?.fromCache === true;
+  const savedAt = showOfflineBanner ? stale.cachedAt : null;
 
   const summary = data.summary || {};
   const byYear = safeArr(data.byYear);
