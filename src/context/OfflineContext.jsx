@@ -10,6 +10,8 @@ import { warmVitalCache } from '../offline/vitalOffline';
 import { refreshTrackingPersonnel } from '../offline/adapters/documentTrackingOffline';
 import { usePermissions } from './PermissionContext';
 import { pushToast } from '../services/toastService';
+import useOnlineStatus from '../hooks/useOnlineStatus';
+import { refreshSnapshot } from '../offline/snapshotStore';
 
 const OfflineContext = createContext(null);
 
@@ -17,6 +19,7 @@ const MODULES = ['birth', 'marriage', 'death', 'tracking'];
 const EMPTY_COUNTS = { pending: 0, syncing: 0, failed: 0, conflict: 0, synced: 0, waiting: 0, total: 0 };
 const EMPTY_MODULE = { pending: 0, waiting: 0, syncing: 0, failed: 0, conflict: 0, synced: 0, total: 0 };
 const WARMUP_INTERVAL_MS = 10 * 60 * 1000;
+const SNAPSHOT_API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 async function requestPersistence() {
   try {
@@ -51,6 +54,7 @@ function tallyModule(rows, entity, user) {
 
 export function OfflineProvider({ children }) {
   const { authenticated } = usePermissions();
+  const databaseOnline = useOnlineStatus();
   const [online, setOnline] = useState(isOnline());
   const [sync, setSync] = useState(getSyncState());
   const [counts, setCounts] = useState(EMPTY_COUNTS);
@@ -133,6 +137,22 @@ export function OfflineProvider({ children }) {
       unsubOutbox();
     };
   }, [refreshCounts, notify]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      if (!navigator.onLine) return;
+      refreshSnapshot(SNAPSHOT_API_BASE).catch((err) => {
+        if (active) console.warn('[OfflineContext] snapshot refresh failed:', err);
+      });
+    };
+    if (databaseOnline) refresh();
+    window.addEventListener('online', refresh);
+    return () => {
+      active = false;
+      window.removeEventListener('online', refresh);
+    };
+  }, [databaseOnline]);
 
   // Keeps the offline copies fresh while online. Runs only for a confirmed session.
   useEffect(() => {

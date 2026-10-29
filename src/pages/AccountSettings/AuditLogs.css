@@ -1,7 +1,6 @@
 /* ── AuditLogs.css — matched to home.css design system ── */
 
 .audit-page {
-  /* Local tokens: one crisp border for controls, one hairline for tables */
   --audit-control-border: #cbd5e1;
   --audit-hairline:       rgba(15, 23, 42, 0.07);
   --audit-card-shadow:    0 1px 2px rgba(15, 23, 42, 0.05);

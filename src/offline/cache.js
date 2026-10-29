@@ -1,36 +1,58 @@
 // src/offline/cache.js
-// Called on logout. Removes personal data cached on this device.
-// The outbox (unsynced changes) and offline login records are kept.
+// Removes personal data for one user. The outbox remains bound to its owner.
 import { getDB } from './db'
 
 const LOCAL_STORAGE_KEYS = ['dt_store_v4', 'dt_personnel_cache_v1']
+const SNAPSHOT_CACHE = 'vr-snapshot-v1'
+const SNAPSHOT_PATH = '/__offline__/'
 
-// Archive record lists saved through archiveLocalStore.js. Matches keys
-// such as "birth:records", "death:archived", "marriage:records", with or
-// without a storage prefix in front. Verify against archiveLocalStore.js.
-const ARCHIVE_LIST_KEY = /(birth|death|marriage):(records|archived)/
-
-function clearLocalArchiveLists() {
-  try {
-    const doomed = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k && ARCHIVE_LIST_KEY.test(k)) doomed.push(k)
-    }
-    doomed.forEach((k) => localStorage.removeItem(k))
-  } catch {
-    /* storage unavailable: nothing to clear */
-  }
+function normalizedUsername(username) {
+  return String(username || '').trim().toLowerCase()
 }
 
-export async function cacheClear() {
+function snapshotUrl(username) {
+  const normalized = normalizedUsername(username)
+  return normalized
+    ? new URL(`${SNAPSHOT_PATH}${encodeURIComponent(normalized)}/snapshot.json`, window.location.origin).href
+    : null
+}
+
+export async function clearSnapshot(username) {
+  if (!username) return false
+  const cache = await caches.open(SNAPSHOT_CACHE)
+  return cache.delete(snapshotUrl(username))
+}
+
+export function clearSnapshotOnSessionExpiry(username) {
+  return clearSnapshot(username)
+}
+
+export async function removeSnapshotsForOtherUsers(username) {
+  const current = normalizedUsername(username)
+  const cache = await caches.open(SNAPSHOT_CACHE)
+  const requests = await cache.keys()
+  await Promise.all(requests.filter((request) => {
+    const path = new URL(request.url).pathname
+    const match = path.match(/^\/__offline__\/([^/]+)\/snapshot\.json$/)
+    if (!match) return path === '/__offline__/snapshot.json'
+    let owner
+    try {
+      owner = decodeURIComponent(match[1]).trim().toLowerCase()
+    } catch {
+      return true
+    }
+    return owner !== current
+  }).map((request) => cache.delete(request)))
+}
+
+export async function cacheClear(username) {
+  await clearSnapshot(username)
   const db = await getDB()
 
-  // Cached API responses, PDF copies, and dashboard data
+  // Cached PDF copies.
   await db.clear('cache')
 
-  // Archive password verifiers kept in meta; record lists are stored under
-  // archiveLocalStore.js with the v2 prefix and are deleted via localStorage cleanup.
+  // Archive password verifiers kept in meta.
   const metaKeys = (await db.getAllKeys('meta')).filter(
     (k) => k === 'archiveCreds:v2'
   )
@@ -39,9 +61,6 @@ export async function cacheClear() {
     for (const k of metaKeys) tx.store.delete(k)
     await tx.done
   }
-
-  // Archive record lists kept in localStorage (birth, death, marriage)
-  clearLocalArchiveLists()
 
   // Document Tracking copies kept in localStorage
   LOCAL_STORAGE_KEYS.forEach((k) => {

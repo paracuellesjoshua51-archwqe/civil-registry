@@ -24,7 +24,7 @@ const SENSITIVE_FIELD_TOKENS = [
   'signature', 'record',
 ];
 const currentUser = () => {
-  try { return sessionStorage.getItem('username'); } catch { return null; }
+  try { return sessionStorage.getItem('username')?.trim().toLowerCase() || null; } catch { return null; }
 };
 
 function containsSensitiveFields(value) {
@@ -57,19 +57,25 @@ export function assertSecureOfflineQueue(entity, { json = null, fileId = null, h
 
 export async function enqueue({ opId, entity, label, method, url, json = null, fileId = null, fileField = 'file' }) {
   assertSecureOfflineQueue(entity, { json, fileId });
+  const username = currentUser();
+  if (!username) throw new Error('Sign in before queuing offline changes.');
   const db = await getDB();
   // Sensitive JSON (names, parents, payments) is encrypted at rest when the
   // browser allows it. Non-sensitive values may remain plain on insecure origins.
   let storedJson = null;
   if (json) {
-    storedJson = cryptoAvailable() ? { __enc: await encryptJSON(json) } : json;
+    const updatedJson = {
+      ...json,
+      updated_at: json.updated_at || new Date().toISOString(),
+    };
+    storedJson = cryptoAvailable() ? { __enc: await encryptJSON(updatedJson) } : updatedJson;
   }
   const op = {
     opId: opId || newOpId(),
     entity, label, method, url,
     json: storedJson,
     fileId, fileField,
-    username: currentUser(),
+    username,
     status: 'pending', attempts: 0, lastError: null,
     createdAt: Date.now(),
   };

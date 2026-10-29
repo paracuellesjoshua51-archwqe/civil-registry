@@ -54,6 +54,12 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//],
         globPatterns: ["**/*.{js,css,html,png,jpg,svg,webmanifest}"],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        runtimeCaching: [{
+          urlPattern: ({ url }) =>
+            url.pathname === "/api/offline/snapshot"
+            || url.pathname === "/api/offline/snapshot/package",
+          handler: "NetworkOnly",
+        }],
       },
     }),
   ],

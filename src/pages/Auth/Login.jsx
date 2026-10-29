@@ -3,8 +3,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import "./Login.css";
-import { saveOfflineCredential, verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
+import { verifyOfflineLogin } from "../../offline/adapters/offlineLogin";
 import { pushToast } from "../../services/toastService";
+import { refreshSnapshot } from "../../offline/snapshotStore";
+import { removeSnapshotsForOtherUsers } from "../../offline/cache";
 import { usePermissions, markSessionActive, saveSessionCache } from "../../context/PermissionContext";
 import bgImage from "../../assets/images/home.jpg";
 
@@ -149,12 +151,6 @@ const Login = () => {
       if (response.data.success) {
         setIsLocked(false);
         setLockSecondsRemaining(0);
-        const userObj = response.data.user || {};
-        const loggedUsername = userObj.username || username;
-
-        // Save hashed credential on this device for future offline login
-        await saveOfflineCredential(loggedUsername, password, userObj);
-
         pushToast({ title: "Login successful!", message: msg, success: true, duration: 2000 });
 
         // Mark this tab as logged in, then confirm the session with the server.
@@ -162,6 +158,9 @@ const Login = () => {
         markUnlockedThisLaunch();
         const signedIn = await refresh();
         if (signedIn) {
+          refreshSnapshot(API).catch((err) => {
+            console.warn("[Login] Offline snapshot refresh failed:", err);
+          });
           navigate("/dashboard", { replace: true });
           return;
         }
@@ -195,6 +194,7 @@ const Login = () => {
         if (res.ok) {
           const u = res.user || {};
           const offlineUsername = u.username || username;
+          await removeSnapshotsForOtherUsers(offlineUsername);
           const offlineIsAdmin =
             Boolean(u.is_admin) || String(u.role || "").toLowerCase().includes("admin");
 

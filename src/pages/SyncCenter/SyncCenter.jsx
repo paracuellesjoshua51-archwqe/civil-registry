@@ -4,6 +4,7 @@ import { usePermissions } from '../../context/PermissionContext';
 import { listAll, subscribeOutbox, requeueOne, removeOp } from '../../offline/outboxQueue';
 import { getAllowedEntities } from '../../offline/syncScope';
 import { useRegisterRefresh } from '../../context/RefreshContext';
+import { readSnapshot, writeSnapshot } from '../../offline/snapshotStore';
 import './SyncCenter.css';
 
 const TABS = [
@@ -25,6 +26,7 @@ const STATUS_LABEL = {
 };
 
 const fmt = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 const currentUser = () => {
   try { return sessionStorage.getItem('username') || ''; } catch { return ''; }
 };
@@ -132,6 +134,9 @@ export default function SyncCenter() {
   const [tab, setTab] = useState('unsynced');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [snapshotSavedAt, setSnapshotSavedAt] = useState(null);
+  const [packageBusy, setPackageBusy] = useState(false);
+  const importInput = useRef(null);
 
   // Discard modal state
   const [discardTarget, setDiscardTarget] = useState(null);
@@ -155,6 +160,12 @@ export default function SyncCenter() {
     load();
     return subscribeOutbox(load);
   }, [load]);
+
+  useEffect(() => {
+    readSnapshot()
+      .then((snapshot) => setSnapshotSavedAt(snapshot?._snapshot?.savedAt || null))
+      .catch((err) => setNotice({ type: 'error', text: `Could not read the offline snapshot: ${err.message}` }));
+  }, []);
 
   useRegisterRefresh(load);
 
@@ -261,6 +272,46 @@ export default function SyncCenter() {
     if (online) handleSyncNow();
   };
 
+  const exportOfflinePackage = async () => {
+    setPackageBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/offline/snapshot/package`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`Export failed (${response.status}).`);
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = 'offline-snapshot.json';
+      link.click();
+      URL.revokeObjectURL(downloadUrl);
+      setNotice({ type: 'ok', text: 'Offline package exported.' });
+    } catch (err) {
+      setNotice({ type: 'error', text: `Could not export the offline package: ${err.message}` });
+    } finally {
+      setPackageBusy(false);
+    }
+  };
+
+  const importOfflinePackage = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setPackageBusy(true);
+    try {
+      const snapshot = JSON.parse(await file.text());
+      const saved = await writeSnapshot(snapshot);
+      setSnapshotSavedAt(saved._snapshot?.savedAt || null);
+      setNotice({ type: 'ok', text: 'Offline package imported and saved on this device.' });
+    } catch (err) {
+      setNotice({ type: 'error', text: `Could not import the offline package: ${err.message}` });
+    } finally {
+      event.target.value = '';
+      setPackageBusy(false);
+    }
+  };
+
   // Opens the modal instead of window.confirm.
   const requestDiscard = (row) => setDiscardTarget(row);
 
@@ -295,6 +346,22 @@ export default function SyncCenter() {
           <div className="sc-header__right">
             <span className={`sc-pill ${online ? 'on' : 'off'}`}>{online ? 'Online' : 'Offline'}</span>
             <span className="sc-last">Last successful sync: {fmt(sync.lastSyncAt)}</span>
+            <span className="sc-last">
+              Offline snapshot: {snapshotSavedAt ? new Date(snapshotSavedAt).toLocaleString() : 'not downloaded'}
+            </span>
+            <button className="sc-btn" disabled={!online || packageBusy} onClick={exportOfflinePackage}>
+              {packageBusy ? 'Working…' : 'Export offline package'}
+            </button>
+            <button className="sc-btn" disabled={packageBusy} onClick={() => importInput.current?.click()}>
+              Import offline package
+            </button>
+            <input
+              ref={importInput}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={importOfflinePackage}
+            />
             {counts.failed + counts.conflict > 0 && (
               <button className="sc-btn" disabled={busy || sync.syncing || !online} onClick={handleRetryAll}>
                 Retry failed

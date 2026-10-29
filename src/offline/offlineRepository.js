@@ -1,26 +1,18 @@
-import { getDB } from './db';
 import { isDbAvailable, markOnline } from './connectivityService';
 import { assertSecureOfflineQueue, enqueue, newOpId } from './outboxQueue';
 import { saveFile } from './fileStore';
+import { applySnapshotMutation, readSnapshot, updateSnapshot } from './snapshotStore';
 
 export const isNetworkError = (e) =>
   e?.network === true || e instanceof TypeError || /failed to fetch|network|load failed/i.test(e?.message || '');
 
-async function trim(entity, max) {
-  const db = await getDB();
-  const items = await db.getAllFromIndex('cache', 'entity', entity);
-  if (items.length <= max) return;
-  items.sort((a, b) => a.cachedAt - b.cachedAt);
-  await Promise.all(items.slice(0, items.length - max).map((i) => db.delete('cache', i.key)));
-}
-
 /**
- * GET JSON. Online: fetch + remember it. Offline (or the server is up but its
- * database is unreachable, i.e. HTTP 5xx): return the remembered copy.
+ * GET analytics JSON from the active snapshot. Live results refresh that copy;
+ * offline reads never consult IndexedDB.
  */
 export async function cachedGetJson(url, { entity = 'http', signal, maxEntries = 0, forceNetwork = false } = {}) {
-  const db = await getDB();
-  const key = `GET:${url}`;
+  void entity;
+  void maxEntries;
   let lastErr = null;
 
   // forceNetwork: try the server even if the app currently thinks it is offline
@@ -28,12 +20,17 @@ export async function cachedGetJson(url, { entity = 'http', signal, maxEntries =
   if (isDbAvailable() || forceNetwork) {
     try {
       const res = await fetch(url, { signal, credentials: 'include' });
-      let body = null;
-      try { body = await res.json(); } catch { /* non-JSON */ }
+      const body = await res.json();
       if (!res.ok) throw Object.assign(new Error(body?.error || `Server responded with ${res.status}`), { http: res.status });
       markOnline(true); // a real request just worked, so we are online
-      await db.put('cache', { key, entity, id: url, data: body, cachedAt: Date.now() });
-      if (maxEntries) await trim(entity, maxEntries);
+      const path = new URL(url, window.location.origin).pathname;
+      await updateSnapshot((snapshot) => ({
+        ...snapshot,
+        _snapshot: {
+          ...snapshot._snapshot,
+          dashboard: { ...(snapshot._snapshot?.dashboard || {}), [path]: body },
+        },
+      }));
       return { data: body, fromCache: false, cachedAt: Date.now() };
     } catch (err) {
       if (err?.name === 'AbortError') throw err;
@@ -44,19 +41,39 @@ export async function cachedGetJson(url, { entity = 'http', signal, maxEntries =
     }
   }
 
-  const hit = await db.get('cache', key);
-  if (hit) return { data: hit.data, fromCache: true, cachedAt: hit.cachedAt };
+  const snapshot = await readSnapshot();
+  const path = new URL(url, window.location.origin).pathname;
+  const saved = snapshot?._snapshot?.dashboard?.[path];
+  if (saved !== undefined) {
+    return {
+      data: saved,
+      fromCache: true,
+      cachedAt: Date.parse(snapshot._snapshot?.savedAt || '') || null,
+    };
+  }
 
   // Nothing saved. If the server answered with an error, show that; otherwise we are simply offline.
   if (lastErr?.http) throw lastErr;
-  throw new Error('You are offline and this data is not saved on this device yet.');
+  const error = new Error('No snapshot is available. Connect once to download offline data.');
+  error.status = 'no-snapshot';
+  throw error;
 }
 
 /** Edit a saved GET copy (e.g. hide a record you deleted offline). */
 export async function patchCachedJson(url, updater) {
-  const db = await getDB();
-  const hit = await db.get('cache', `GET:${url}`);
-  if (hit) await db.put('cache', { ...hit, data: updater(hit.data) });
+  const path = new URL(url, window.location.origin).pathname;
+  await updateSnapshot((snapshot) => ({
+    ...snapshot,
+    _snapshot: {
+      ...snapshot._snapshot,
+      dashboard: {
+        ...(snapshot._snapshot?.dashboard || {}),
+        ...(snapshot._snapshot?.dashboard?.[path] !== undefined
+          ? { [path]: updater(snapshot._snapshot.dashboard[path]) }
+          : {}),
+      },
+    },
+  }));
 }
 
 /** JSON write. Sent now if online, otherwise queued. */
@@ -78,6 +95,7 @@ export async function mutate({ entity, label, method = 'POST', url, json = null 
     }
   }
   const op = await enqueue({ opId, entity, label, method, url, json });
+  await applySnapshotMutation({ entity, method, url, json: op.json?.__enc ? json : op.json, opId });
   return { queued: true, op };
 }
 
@@ -85,5 +103,19 @@ export async function mutate({ entity, label, method = 'POST', url, json = null 
 export async function queueUpload({ entity, label, url, file, fileField = 'file' }) {
   assertSecureOfflineQueue(entity, { hasFile: true });
   const fileId = await saveFile(file);
-  return enqueue({ entity, label, method: 'POST', url, fileId, fileField });
+  const op = await enqueue({ entity, label, method: 'POST', url, fileId, fileField });
+  await applySnapshotMutation({
+    entity,
+    method: 'POST',
+    url,
+    opId: op.opId,
+    json: {
+      id: `offline-${op.opId}`,
+      file_name: file.name,
+      uploaded_at: new Date(op.createdAt).toISOString(),
+      archived_at: new Date(op.createdAt).toISOString(),
+      updated_at: new Date(op.createdAt).toISOString(),
+    },
+  });
+  return op;
 }

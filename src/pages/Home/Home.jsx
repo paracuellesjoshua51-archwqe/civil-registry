@@ -610,14 +610,15 @@ const Home = () => {
   const handleConfirmLogout = async () => {
     setLoggingOut(true);
     try {
-      await logout();
-    } catch (err) {
-      console.error("[Home] logout() failed, retrying direct /api/logout call:", err);
-      try {
-        await fetch("/api/logout", { method: "POST", credentials: "include" });
-      } catch (fallbackErr) {
-        console.error("[Home] Fallback /api/logout also failed:", fallbackErr);
+      const loggedOut = await logout();
+      if (loggedOut === false) {
+        setLoggingOut(false);
+        return;
       }
+    } catch (err) {
+      console.error("[Home] logout was cancelled because pending offline changes could not be checked:", err);
+      setLoggingOut(false);
+      return;
     }
     sessionStorage.clear();
     localStorage.removeItem("vitalRecordsOpen");

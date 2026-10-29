@@ -1,5 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { cacheClear } from "../offline/cache";
+import {
+  cacheClear,
+  clearSnapshotOnSessionExpiry,
+  removeSnapshotsForOtherUsers,
+} from "../offline/cache";
+import { listByStatus } from "../offline/outboxQueue";
+import { runSync } from "../offline/syncEngine";
+import { refreshSnapshot } from "../offline/snapshotStore";
 import { getAllowedEntities, setSyncScope } from "../offline/syncScope";
 
 const API = import.meta.env.VITE_API_BASE_URL || "";
@@ -36,6 +43,9 @@ function readSessionCache() {
     }
     if (Date.now() - c.savedAt > SESSION_CACHE_MAX_AGE_MS) {
       clearSessionCache();
+      clearSnapshotOnSessionExpiry(c.username).catch((error) => {
+        console.error("[Permissions] could not clear expired offline snapshot:", error);
+      });
       return null;
     }
     return c;
@@ -134,6 +144,30 @@ export function PermissionProvider({ children }) {
   }, [resetSessionState]);
 
   const logout = useCallback(async () => {
+    const username = sessionStorage.getItem("username")?.trim().toLowerCase();
+    const pending = (await listByStatus()).filter(
+      (op) => String(op.username || "").trim().toLowerCase() === username
+    );
+    if (pending.length && typeof window.confirm === "function") {
+      const syncFirst = window.confirm(
+        `You have ${pending.length} offline change${pending.length === 1 ? "" : "s"} waiting to sync. ` +
+        "Select OK to sync before logging out, or Cancel to log out and keep them queued for this user."
+      );
+      if (syncFirst) {
+        try {
+          await runSync();
+        } catch (error) {
+          console.error("[Permissions] could not sync before logout:", error);
+        }
+        const remaining = (await listByStatus()).filter(
+          (op) => String(op.username || "").trim().toLowerCase() === username
+        );
+        if (remaining.length && !window.confirm(
+          `${remaining.length} change${remaining.length === 1 ? "" : "s"} remain unsynced and will stay queued for ${username}. Log out anyway?`
+        )) return false;
+      }
+    }
+
     try {
       await fetchWithTimeout(`${API}/api/logout`, {
         method: "POST",
@@ -142,10 +176,15 @@ export function PermissionProvider({ children }) {
     } catch (e) {
       console.warn("[Permissions] logout request failed:", e);
     } finally {
-      cacheClear().catch(() => {});
+      try {
+        await cacheClear(username);
+      } catch (e) {
+        console.error("[Permissions] could not clear offline user data:", e);
+      }
       clearPerms();
       sessionStorage.clear();
     }
+    return true;
   }, [clearPerms]);
 
   // Restores the session from the offline cache. Returns true ONLY when the
@@ -164,7 +203,12 @@ export function PermissionProvider({ children }) {
     setSyncScope(getAllowedEntities(perms, admin));
     setAuthenticated(true);
 
-    if (c.username) sessionStorage.setItem("username", c.username);
+    if (c.username) {
+      removeSnapshotsForOtherUsers(c.username).catch((error) => {
+        console.error("[Permissions] could not remove another user's offline snapshot:", error);
+      });
+      sessionStorage.setItem("username", c.username);
+    }
     sessionStorage.setItem("isAuthenticated", "true");
     sessionStorage.setItem(SESSION_FLAG, "1");
     return true;
@@ -201,6 +245,12 @@ export function PermissionProvider({ children }) {
 
         // Real 401: the server session expired. Log out and forget the cache.
         if (res.status === 401) {
+          const username = sessionStorage.getItem("username");
+          try {
+            await clearSnapshotOnSessionExpiry(username);
+          } catch (snapshotError) {
+            console.error("[Permissions] could not clear expired offline snapshot:", snapshotError);
+          }
           clearPerms();
           return false;
         }
@@ -240,6 +290,7 @@ export function PermissionProvider({ children }) {
             userObj.role || data.role || (userAdmin ? "Administrator" : "User");
           const uname = userObj.username || data.username || sessionStorage.getItem("username") || null;
 
+          await removeSnapshotsForOtherUsers(uname);
           setSyncScope(getAllowedEntities(perms, userAdmin));
           setRole(resolvedRole);
           setPermissions(perms);
@@ -253,12 +304,23 @@ export function PermissionProvider({ children }) {
             isAdmin: userAdmin,
           });
 
-          if (uname) sessionStorage.setItem("username", uname);
+          if (uname) {
+            sessionStorage.setItem("username", uname);
+            refreshSnapshot(API).catch((snapshotError) => {
+              console.warn("[Permissions] offline snapshot refresh failed:", snapshotError);
+            });
+          }
           sessionStorage.setItem("isAuthenticated", "true");
           return true;
         }
 
-        resetSessionState();
+        const expiredUsername = sessionStorage.getItem("username");
+        try {
+          await clearSnapshotOnSessionExpiry(expiredUsername);
+        } catch (snapshotError) {
+          console.error("[Permissions] could not clear expired offline snapshot:", snapshotError);
+        }
+        clearPerms();
         return false;
       } catch (e) {
         if (e.name === "AbortError") {

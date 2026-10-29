@@ -6,6 +6,8 @@ import { markConflict } from './conflictResolver';
 import { getDB, getMeta, setMeta } from './db';
 import { decryptJSON } from './secureStore';
 import { isEntityAllowed } from './syncScope';
+import { reconcileSyncedCreate, refreshSnapshot } from './snapshotStore';
+import { clearSnapshotOnSessionExpiry } from './cache';
 
 // ---------- Backend base URL ----------
 
@@ -69,8 +71,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The logged-in username for this tab. Null when nobody is logged in.
 const currentUser = () => {
-  try { return sessionStorage.getItem('username') || null; } catch { return null; }
+  try { return sessionStorage.getItem('username')?.trim().toLowerCase() || null; } catch { return null; }
 };
+const operationUser = (op) => String(op.username || '').trim().toLowerCase();
+
+function operationPath(url) {
+  return new URL(url, window.location.origin).pathname.replace(/\/+$/, '');
+}
 
 // A queued change may point at a temporary document id ("offline-<opId>").
 // Swap in the real id saved when that document was created on the server.
@@ -127,6 +134,7 @@ export async function runSync() {
     skippedOtherLogin: 0,
   };
   const paused = new Set(); // modules paused by a server error in this run
+  const syncedCreates = [];
   let serverError = null;
 
   try {
@@ -138,7 +146,7 @@ export async function runSync() {
     // Work this login may send (its own items, within its permissions).
     // Everything else stays queued, untouched.
     const scoped = (await listByStatus('pending')).filter((o) => isEntityAllowed(o.entity));
-    const queue = scoped.filter((o) => !o.username || o.username === me);
+    const queue = scoped.filter((o) => operationUser(o) === me);
     summary.skippedOtherLogin = scoped.length - queue.length;
     if (!queue.length) return summary;
 
@@ -173,15 +181,25 @@ export async function runSync() {
       const msg = body?.error || '';
 
       if ((s >= 200 && s < 300) || (op.method === 'DELETE' && s === 404)) {
+        const path = operationPath(op.url);
         // A document created offline: remember its real id so later queued
         // changes for the temporary id reach the right document.
-        if (op.method === 'POST' && /\/api\/documents$/.test(op.url) && body?.id != null) {
+        if (op.method === 'POST' && path === '/api/documents' && body?.id != null) {
           await setMeta(`docmap:${op.opId}`, body.id);
+        }
+        if (op.method === 'POST' && body?.id != null
+          && (path === '/api/documents' || /^\/api\/(birth|death|marriage)\/records$/.test(path))) {
+          syncedCreates.push({ entity: op.entity, opId: op.opId, serverRecord: body });
         }
         await markSynced(op.opId);
         summary.succeeded += 1;
       } else if (s === 401) {
         await updateOp(op.opId, { status: 'pending' });
+        try {
+          await clearSnapshotOnSessionExpiry(me);
+        } catch (error) {
+          console.error('[syncEngine] could not clear expired offline snapshot:', error);
+        }
         setState({ authRequired: true, lastError: 'Session expired. Log in again to continue syncing.' });
         return summary;
       } else if (s === 403) {
@@ -214,6 +232,21 @@ export async function runSync() {
 
     summary.pausedEntities = [...paused];
 
+    if (summary.succeeded > 0) {
+      try {
+        await refreshSnapshot(API_BASE);
+      } catch (err) {
+        console.warn('[syncEngine] changes synced, but snapshot refresh failed:', err);
+      }
+      for (const create of syncedCreates) {
+        try {
+          await reconcileSyncedCreate(create);
+        } catch (err) {
+          console.warn(`[syncEngine] synced create ${create.opId}, but snapshot reconciliation failed:`, err);
+        }
+      }
+    }
+
     if (paused.size) {
       failStreak += 1;
       setState({ lastError: serverError });
@@ -244,7 +277,7 @@ export async function retryAllFailed() {
   const rows = [
     ...(await listByStatus('failed')),
     ...(await listByStatus('conflict')),
-  ].filter((o) => isEntityAllowed(o.entity));
+  ].filter((o) => isEntityAllowed(o.entity) && operationUser(o) === currentUser());
   for (const o of rows) await requeueOne(o.opId);
   return runSync();
 }

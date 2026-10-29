@@ -1,6 +1,6 @@
 // Offline layer for Birth, Death and Marriage. One implementation, selected by
-// `entity`. Record lists live in localStorage (archiveLocalStore.js); PDFs and
-// the outbox live in IndexedDB.
+// `entity`. Record lists live in the shared snapshot; PDFs and the outbox live
+// in IndexedDB.
 //
 // Cache keys are "<entity>:records" / "<entity>:archived" in localStorage, so
 // cache.js can clear them on logout.
@@ -15,7 +15,7 @@ import { saveFile, getFile } from "./fileStore";
 import { subscribeSyncState } from "./syncEngine";
 import useOnlineStatus from "../hooks/useOnlineStatus";
 import { refreshAllOfflineCredentials } from "./archivePassword";
-import { saveRecordList, loadRecordList } from "./archiveLocalStore";
+import { applySnapshotMutation, readSnapshot, updateSnapshot } from "./snapshotStore";
 import { apiFetch } from "../services/apiFetch";
 import { createPdfBlobFromData } from "../utils/pdfUtils";
 import { fetchJsonWithRetry } from "../utils/fetchJsonWithRetry";
@@ -23,15 +23,6 @@ import { fetchJsonWithRetry } from "../utils/fetchJsonWithRetry";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pdfKey = (entity, id) => `vr-${entity}-pdf:${id}`;
 const NUMERIC_ID = /^\d+$/;
-
-/* ── list cache (localStorage) ── */
-
-export const saveList = async (entity, name, data) =>
-  saveRecordList(`${entity}:${name}`, data);
-
-/** @returns {{data: any[], savedAt: number} | null} */
-export const loadList = async (entity, name) =>
-  loadRecordList(`${entity}:${name}`);
 
 /* ── PDF cache (IndexedDB) ── */
 
@@ -104,16 +95,36 @@ export function startPdfPrefetch(entity, ids, api, gapMs = 600) {
 export async function queueUpload(entity, url, file) {
   assertSecureOfflineQueue(entity, { hasFile: true });
   const fileId = await saveFile(file);
-  return enqueue({
+  const op = await enqueue({
     entity, label: `Upload ${file.name}`, method: "POST", url, fileId, fileField: "file",
   });
+  await applySnapshotMutation({
+    entity,
+    method: "POST",
+    url,
+    opId: op.opId,
+    json: {
+      id: `offline-${op.opId}`,
+      file_name: file.name,
+      uploaded_at: new Date(op.createdAt).toISOString(),
+      archived_at: new Date(op.createdAt).toISOString(),
+      updated_at: new Date(op.createdAt).toISOString(),
+    },
+  });
+  return op;
 }
 
-export const queueDelete = (entity, url, who = "") =>
-  enqueue({ entity, label: `Delete ${who}`, method: "DELETE", url });
+export async function queueDelete(entity, url, who = "") {
+  const op = await enqueue({ entity, label: `Delete ${who}`, method: "DELETE", url });
+  await applySnapshotMutation({ entity, method: "DELETE", url, opId: op.opId });
+  return op;
+}
 
-export const queueTransaction = (entity, url, json, who = "", opId) =>
-  enqueue({ opId, entity, label: `Transaction: ${who}`, method: "POST", url, json });
+export async function queueTransaction(entity, url, json, who = "", opId) {
+  const op = await enqueue({ opId, entity, label: `Transaction: ${who}`, method: "POST", url, json });
+  await applySnapshotMutation({ entity, method: "POST", url, json: op.json?.__enc ? json : op.json, opId: op.opId });
+  return op;
+}
 
 /* ── queued changes, shown immediately in the UI ── */
 
@@ -178,19 +189,39 @@ export async function loadListWithFallback(entity, path, cacheName, signal) {
   if (isDbAvailable()) {
     try {
       const data = await fetchJsonWithRetry(path, { signal });
-      const arr = Array.isArray(data) ? data : [];
-      await saveList(entity, cacheName, arr);
-      return { data: arr, fromCache: false };
+      if (!Array.isArray(data)) throw new Error("The server returned an invalid record list.");
+      const section = `${entity}_${cacheName === "records" ? "active" : "archived"}`;
+      await updateSnapshot((snapshot) => ({
+        ...snapshot,
+        data: { ...snapshot.data, [section]: data },
+      }));
+      return { data, fromCache: false, status: "ok" };
     } catch (err) {
       if (err?.name === "AbortError") throw err;
-      const cached = await loadList(entity, cacheName);
-      if (cached) return { data: cached.data, fromCache: true, savedAt: cached.savedAt };
-      throw err;
+      const snapshot = await readSnapshot();
+      if (snapshot && Array.isArray(snapshot.data[`${entity}_${cacheName === "records" ? "active" : "archived"}`])) {
+        return {
+          data: snapshot.data[`${entity}_${cacheName === "records" ? "active" : "archived"}`],
+          fromCache: true,
+          status: "ok",
+          savedAt: Date.parse(snapshot._snapshot?.savedAt || "") || null,
+        };
+      }
+      if (snapshot) throw err;
+      return { data: [], fromCache: true, status: "no-snapshot", message: "Connect once to download offline data." };
     }
   }
-  const cached = await loadList(entity, cacheName);
-  if (cached) return { data: cached.data, fromCache: true, savedAt: cached.savedAt };
-  return { data: [], fromCache: true, empty: true };
+  const snapshot = await readSnapshot();
+  const section = `${entity}_${cacheName === "records" ? "active" : "archived"}`;
+  if (snapshot && Array.isArray(snapshot.data[section])) {
+    return {
+      data: snapshot.data[section],
+      fromCache: true,
+      status: "ok",
+      savedAt: Date.parse(snapshot._snapshot?.savedAt || "") || null,
+    };
+  }
+  return { data: [], fromCache: true, status: "no-snapshot", message: "Connect once to download offline data." };
 }
 
 /* ── PDF loading: queued file → server (refreshes the copy) → saved copy ── */
@@ -266,6 +297,7 @@ export function useVitalData({ entity, api, showNotif }) {
   const [rawActive, setRawActive] = useState([]);
   const [rawArchived, setRawArchived] = useState([]);
   const [loadingRecords, setLoading] = useState(false);
+  const [snapshotStatus, setSnapshotStatus] = useState("loading");
 
   const notifyRef = useRef(showNotif);
   useEffect(() => { notifyRef.current = showNotif; }, [showNotif]);
@@ -278,9 +310,9 @@ export function useVitalData({ entity, api, showNotif }) {
     try {
       const now = Date.now();
       if (now - lastWarn.current < 5000) return;
-      if (res.empty) {
+      if (res.status === "no-snapshot") {
         lastWarn.current = now;
-        notifyRef.current(`No saved ${label} on this device yet. Connect once so they can be downloaded.`, "error");
+        notifyRef.current(`Connect once to download offline ${label}.`, "error");
         return;
       }
       if (isDbAvailable() && (await checkNow())) {
@@ -301,6 +333,7 @@ export function useVitalData({ entity, api, showNotif }) {
     try {
       const res = await loadListWithFallback(entity, `${api}/${path}`, cacheName, controller.signal);
       setData(res.data);
+      setSnapshotStatus(res.status);
       warn(res, label);
       return true;
     } catch (err) {
@@ -368,7 +401,15 @@ export function useVitalData({ entity, api, showNotif }) {
     [rawArchived, pending.uploads, pending.deleteIds],
   );
 
-  return { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, online };
+  return {
+    allRecords,
+    allArchivedRecords,
+    loadingRecords,
+    fetchRecords,
+    fetchArchived,
+    online,
+    snapshotStatus,
+  };
 }
 
 /* ── background warm-up ── */
@@ -378,15 +419,10 @@ export async function warmVitalCache(entity, api) {
   if (!isDbAvailable()) return null;
   await refreshAllOfflineCredentials();
   try {
-    const get = async (path) => {
-      const r = await apiFetch(`${api}/${path}`);
-      if (!r.ok) throw new Error(String(r.status));
-      const d = await r.json();
-      return Array.isArray(d) ? d : [];
-    };
-    const [active, archived] = await Promise.all([get("records"), get("archived")]);
-    await saveList(entity, "records", active);
-    await saveList(entity, "archived", archived);
+    const snapshot = await readSnapshot();
+    if (!snapshot) return null;
+    const active = snapshot.data[`${entity}_active`] || [];
+    const archived = snapshot.data[`${entity}_archived`] || [];
     return startPdfPrefetch(entity, [...active, ...archived].map((r) => r.id), api);
   } catch {
     return null;

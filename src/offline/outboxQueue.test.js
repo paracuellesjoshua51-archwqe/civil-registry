@@ -1,8 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { enqueue, listByStatus, removeOp } from "./outboxQueue";
 import { getToasts } from "../services/toastService";
 
 describe("outbox queue", () => {
+  beforeEach(() => {
+    sessionStorage.setItem("username", "alice");
+  });
+
   it("stores a queued transaction as pending and removes it cleanly", async () => {
     const opId = "test-op-queue-1";
     await enqueue({
@@ -17,9 +21,22 @@ describe("outbox queue", () => {
     const queued = (await listByStatus()).find((o) => o.opId === opId);
     expect(queued?.status).toBe("pending");
     expect(queued?.url).toBe("/api/birth/records/complete");
+    expect(queued?.username).toBe("alice");
 
     await removeOp(opId);
     expect((await listByStatus()).some((o) => o.opId === opId)).toBe(false);
+  });
+
+  it("refuses to queue an operation without a signed-in owner", async () => {
+    sessionStorage.removeItem("username");
+    await expect(enqueue({
+      opId: "unowned-op",
+      entity: "preferences",
+      label: "Preference update",
+      method: "POST",
+      url: "/api/preferences",
+      json: { theme: "dark" },
+    })).rejects.toThrow("Sign in before queuing");
   });
 
   it("rejects sensitive writes without WebCrypto and shows an error toast", async () => {

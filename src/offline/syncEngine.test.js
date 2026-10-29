@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => {
   const getMeta = vi.fn(async () => null);
   const setMeta = vi.fn(async () => {});
   const requeueOne = vi.fn();
+  const reconcileSyncedCreate = vi.fn(async () => ({ status: "reconciled" }));
+  const clearSnapshotOnSessionExpiry = vi.fn(async () => true);
 
   return {
     listByStatus,
@@ -27,6 +29,8 @@ const mocks = vi.hoisted(() => {
     getMeta,
     setMeta,
     requeueOne,
+    reconcileSyncedCreate,
+    clearSnapshotOnSessionExpiry,
   };
 });
 
@@ -47,6 +51,16 @@ vi.mock("./db", () => ({
 
 vi.mock("./secureStore", () => ({
   decryptJSON: vi.fn(async (value) => value),
+}));
+
+vi.mock("./snapshotStore", () => ({
+  reconcileSyncedCreate: mocks.reconcileSyncedCreate,
+  refreshSnapshot: vi.fn(async () => null),
+}));
+
+vi.mock("./cache", () => ({
+  clearSnapshotOnSessionExpiry: mocks.clearSnapshotOnSessionExpiry,
+  removeSnapshotsForOtherUsers: vi.fn(async () => {}),
 }));
 
 vi.mock("./syncScope", () => ({
@@ -80,6 +94,7 @@ describe("syncEngine", () => {
     mocks.listByStatus.mockImplementation(async (status) => {
       if (status === "pending") return [{
         opId: "op-1",
+        username: "alice",
         entity: "birth",
         method: "POST",
         url: "/api/records",
@@ -120,9 +135,38 @@ describe("syncEngine", () => {
     expect(summary.failed).toBe(1);
   });
 
+  it("reconciles an offline-created record using the server response before reporting sync success", async () => {
+    const operation = {
+      opId: "create-offline-record",
+      username: "alice",
+      entity: "birth",
+      method: "POST",
+      url: "/api/birth/records",
+      json: { file_name: "new-record.pdf" },
+      attempts: 0,
+      createdAt: Date.now(),
+    };
+    mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [operation] : []);
+    const serverRecord = { id: 42, file_name: "new-record.pdf", updated_at: "2026-01-03T00:00:00Z" };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      status: 201,
+      json: async () => serverRecord,
+    }));
+
+    const summary = await runSync();
+
+    expect(summary.succeeded).toBe(1);
+    expect(mocks.reconcileSyncedCreate).toHaveBeenCalledWith({
+      entity: "birth",
+      opId: operation.opId,
+      serverRecord,
+    });
+  });
+
   it("strips an old host from queued absolute URLs when API_BASE is empty", async () => {
     mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
       opId: "old-host-op",
+      username: "alice",
       entity: "birth",
       method: "POST",
       url: "https://old-backend.example/api/records?source=offline",
@@ -144,6 +188,7 @@ describe("syncEngine", () => {
   it("preserves relative queued URLs when API_BASE is empty", async () => {
     mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
       opId: "relative-url-op",
+      username: "alice",
       entity: "birth",
       method: "POST",
       url: "/api/records?source=offline",
@@ -165,6 +210,7 @@ describe("syncEngine", () => {
   it("counts a server failure when it reaches the retry limit", async () => {
     mocks.listByStatus.mockImplementation(async (status) => status === "pending" ? [{
       opId: "terminal-failure-op",
+      username: "alice",
       entity: "birth",
       method: "POST",
       url: "/api/records",
@@ -185,5 +231,75 @@ describe("syncEngine", () => {
       "terminal-failure-op",
       expect.objectContaining({ status: "failed", attempts: 8 }),
     );
+  });
+
+  it("does not flush User A's queued operations during User B's session", async () => {
+    const userAOperation = {
+      opId: "alice-pending-op",
+      username: "alice",
+      entity: "birth",
+      method: "POST",
+      url: "/api/birth/records",
+      json: { file_name: "alice-record.pdf" },
+      attempts: 0,
+      createdAt: Date.now(),
+    };
+    mocks.listByStatus.mockImplementation(async (status) =>
+      status === "pending" ? [userAOperation] : []);
+    sessionStorage.setItem("username", "bob");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const summary = await runSync();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.updateOp).not.toHaveBeenCalled();
+    expect(summary.skippedOtherLogin).toBe(1);
+    expect((await mocks.listByStatus("pending"))).toContain(userAOperation);
+  });
+
+  it("keeps User A's queued operation and snapshot isolated after User B signs in", async () => {
+    const userAOperation = {
+      opId: "alice-pending-op",
+      username: "alice",
+      entity: "birth",
+      method: "POST",
+      url: "/api/birth/records",
+      json: { file_name: "alice-record.pdf" },
+      attempts: 0,
+      createdAt: Date.now(),
+    };
+    const entries = new Map();
+    const cache = {
+      put: vi.fn(async (request, response) => entries.set(request.url, response.clone())),
+      match: vi.fn(async (request) => entries.get(request.url)?.clone()),
+      delete: vi.fn(async (request) => entries.delete(typeof request === "string" ? request : request.url)),
+      keys: vi.fn(async () => [...entries.keys()].map((url) => new Request(url))),
+    };
+    vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+
+    sessionStorage.setItem("username", "alice");
+    const snapshotStore = await vi.importActual("./snapshotStore");
+    await snapshotStore.writeSnapshot({
+      data: { birth_active: [{ id: 8, name: "Alice's private record" }] },
+      users: {},
+    });
+    const snapshotCache = await vi.importActual("./cache");
+    await snapshotCache.clearSnapshot("alice");
+
+    mocks.listByStatus.mockImplementation(async (status) =>
+      status === "pending" ? [userAOperation] : []);
+    sessionStorage.setItem("username", "bob");
+    await snapshotCache.removeSnapshotsForOtherUsers("bob");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const summary = await runSync();
+
+    expect(await snapshotStore.readSnapshot()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.updateOp).not.toHaveBeenCalled();
+    expect(summary.skippedOtherLogin).toBe(1);
+    expect((await mocks.listByStatus("pending"))).toContain(userAOperation);
   });
 });

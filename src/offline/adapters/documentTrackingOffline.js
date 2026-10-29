@@ -12,11 +12,9 @@
 //  - Writes: sent now when online; queued in the outbox when offline.
 //  - Archive / restore update the local copy immediately (markArchivedLocally)
 //    so the UI never shows a document in the wrong view while waiting.
-//  - peekTrackingList() gives a synchronous read of the saved copy so the page
-//    can paint instantly while the server refresh runs in the background.
-import { getDB } from '../db';
 import { isDbAvailable } from '../connectivityService';
-import { enqueue, newOpId } from '../outboxQueue';
+import { enqueue, listAll, newOpId } from '../outboxQueue';
+import { applySnapshotMutation, readSnapshot, updateSnapshot } from '../snapshotStore';
 
 const API = import.meta.env.VITE_API_BASE_URL || '';
 const ENTITY = 'tracking';
@@ -289,8 +287,7 @@ async function pruneDiscardedPending(store) {
   const ids = Object.keys(store.pending);
   if (!ids.length) return false;
   try {
-    const db = await getDB();
-    const ops = await db.getAll('outbox');
+    const ops = await listAll();
     const byId = new Map(ops.map((o) => [o.opId, o]));
     let changed = false;
 
@@ -380,6 +377,16 @@ async function prefetchDetails(rows) {
         const store = readStore();
         store.details[String(row.id)] = doc;
         writeStore(store);
+        await updateSnapshot((snapshot) => ({
+          ...snapshot,
+          _snapshot: {
+            ...snapshot._snapshot,
+            documentDetails: {
+              ...(snapshot._snapshot?.documentDetails || {}),
+              [String(row.id)]: doc,
+            },
+          },
+        }));
       } catch (e) {
         console.warn('[documentTrackingOffline] could not save document', row.id, e);
       }
@@ -405,6 +412,17 @@ async function storeOnlineList(rows) {
 
   store.savedAt = Date.now();
   writeStore(store);
+  const username = currentUsername().toLowerCase();
+  await updateSnapshot((snapshot) => ({
+    ...snapshot,
+    data: {
+      ...snapshot.data,
+      documents: {
+        ...(snapshot.data.documents || {}),
+        [`${username}:active`]: incoming,
+      },
+    },
+  }));
 
   // Not awaited: the caller gets the list immediately.
   prefetchDetails(incoming);
@@ -412,19 +430,26 @@ async function storeOnlineList(rows) {
 
 /* ── READS ── */
 
-const offlineError = () =>
-  new Error("You're offline and this isn't saved on this device yet. It will load when the connection returns.");
+function snapshotDocumentRows(snapshot, archived) {
+  const username = currentUsername().toLowerCase();
+  const documents = snapshot.data.documents || {};
+  const key = `${username}:${archived ? 'archived' : 'active'}`;
+  if (Array.isArray(documents[key])) return documents[key];
+  if (isAdminOnDevice()) {
+    const adminKey = `admin:${archived ? 'archived' : 'active'}`;
+    if (Array.isArray(documents[adminKey])) return documents[adminKey];
+  }
+  return null;
+}
 
-async function listOffline(store, fallbackErr) {
+async function listOffline(snapshot, store, fallbackErr) {
   const changed = await pruneDiscardedPending(store);
   if (changed) writeStore(store);
 
-  const myList = store.lists[userKey()];
+  const myList = snapshotDocumentRows(snapshot, false);
   const hasAnything = Array.isArray(myList) || Object.keys(store.pending).length > 0;
   if (!hasAnything) {
-    throw fallbackErr || new Error(
-      'Nothing is saved on this device yet. Open Document Tracking once while online on this device, then the documents will be available offline.'
-    );
+    throw fallbackErr || new Error('Document Tracking is not included in the offline snapshot. Connect once to download offline data.');
   }
 
   const { holders } = readLocalPersonnel();
@@ -439,11 +464,11 @@ async function listOffline(store, fallbackErr) {
   return [...pendingRows, ...savedRows];
 }
 
-function archiveOffline(store, fallbackErr) {
-  const saved = store.archived[userKey()];
+function archiveOffline(snapshot, fallbackErr) {
+  const saved = snapshotDocumentRows(snapshot, true);
   if (Array.isArray(saved)) return saved;
   throw fallbackErr || new Error(
-    'The archive is not saved on this device yet. It will load when the connection returns.'
+    'The Document Tracking archive is not included in the offline snapshot. Connect once to download offline data.'
   );
 }
 
@@ -486,13 +511,31 @@ export async function trackingRead(path) {
         const store = readStore();
         store.archived[userKey()] = rows;
         writeStore(store);
+        const username = currentUsername().toLowerCase();
+        await updateSnapshot((snapshot) => ({
+          ...snapshot,
+          data: {
+            ...snapshot.data,
+            documents: {
+              ...(snapshot.data.documents || {}),
+              [`${username}:archived`]: rows,
+            },
+          },
+        }));
         return rows;
       }
 
       if (detailMatch) {
-        const store = readStore();
-        store.details[detailMatch[1]] = body;
-        writeStore(store);
+        await updateSnapshot((snapshot) => ({
+          ...snapshot,
+          _snapshot: {
+            ...snapshot._snapshot,
+            documentDetails: {
+              ...(snapshot._snapshot?.documentDetails || {}),
+              [detailMatch[1]]: body,
+            },
+          },
+        }));
       }
       return body;
     } catch (err) {
@@ -501,14 +544,20 @@ export async function trackingRead(path) {
     }
   }
 
+  const snapshot = await readSnapshot();
+  if (!snapshot) {
+    const error = new Error('No snapshot is available. Connect once to download offline data.');
+    error.status = 'no-snapshot';
+    throw error;
+  }
   const store = readStore();
-  if (isActiveList) return listOffline(store, netErr);
-  if (isArchiveList) return archiveOffline(store, netErr);
+  if (isActiveList) return listOffline(snapshot, store, netErr);
+  if (isArchiveList) return archiveOffline(snapshot, netErr);
 
   if (detailMatch) {
-    const d = store.details[detailMatch[1]];
+    const d = snapshot._snapshot?.documentDetails?.[detailMatch[1]];
     if (d) return fillStageNames(d);
-    throw netErr || offlineError();
+    throw netErr || new Error('This document detail is not included in the offline snapshot. Connect once to download it.');
   }
 
   throw new Error('Unsupported Document Tracking request.');
@@ -547,6 +596,13 @@ export async function trackingWrite({ path, method = 'POST', json = null, label 
 async function queueWrite({ opId, path, method, json, label }) {
   await enqueue({ opId, entity: ENTITY, label, method, url: `${API}${path}`, json });
   const optimistic = await applyOptimistic({ opId, path, method, json });
+  await applySnapshotMutation({
+    entity: ENTITY,
+    method,
+    url: path,
+    json: json ? { ...json, updated_at: json.updated_at || new Date().toISOString() } : json,
+    opId,
+  });
   return { queued: true, ...optimistic };
 }
 
@@ -679,28 +735,3 @@ async function applyOptimistic({ opId, path, method, json }) {
 }
 
 /* ── instant paint ── */
-
-// Synchronous read of the saved copy for one view. Lets the page show the
-// list immediately while the server request runs in the background.
-// Returns null when nothing is saved for that view yet.
-export function peekTrackingList(archived) {
-  const store = readStore();
-  const key = userKey();
-
-  if (archived) {
-    return Array.isArray(store.archived[key]) ? store.archived[key] : null;
-  }
-
-  const saved = Array.isArray(store.lists[key]) ? store.lists[key] : null;
-  if (!saved && Object.keys(store.pending).length === 0) return null;
-
-  const { holders } = readLocalPersonnel();
-  const user = currentUsername();
-  const admin = isAdminOnDevice();
-  const savedList = saved || [];
-  const serverDocNumbers = new Set(savedList.map((r) => String(r.doc_number)));
-
-  const pendingRows = pendingRowsFor(store, holders, user, admin, serverDocNumbers);
-  const savedRows = savedList.filter((r) => rowVisible(r, holders, user, admin));
-  return [...pendingRows, ...savedRows];
-}

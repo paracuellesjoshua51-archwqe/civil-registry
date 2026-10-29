@@ -10,7 +10,6 @@ import {
   trackingWrite,
   apiFetch,
   markArchivedLocally,
-  peekTrackingList,
 } from "../../offline/adapters/documentTrackingOffline";
 import useOnlineStatus from "../../hooks/useOnlineStatus";
 import { Skeleton, SkeletonText } from "../../components/Skeleton";
@@ -500,10 +499,6 @@ export default function DocumentTracking() {
     const silent = opts?.silent === true;
     const archivedView = viewModeRef.current === "archived";
 
-    if (documentsRef.current.length === 0) {
-      const cached = peekTrackingList(archivedView);
-      if (cached) applyRows(cached, archivedView);
-    }
     const showingRows = documentsRef.current.length > 0;
     if (!silent) setListLoading(!showingRows);
     setListError(null);

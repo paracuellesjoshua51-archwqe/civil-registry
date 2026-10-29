@@ -71,7 +71,7 @@ export default function VitalRegistry({ config, initialView = null }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  const { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, online } =
+  const { allRecords, allArchivedRecords, loadingRecords, fetchRecords, fetchArchived, online, snapshotStatus } =
     useVitalData({ entity, api, showNotif });
 
   useRegisterRefresh(async () => {
@@ -411,6 +411,12 @@ export default function VitalRegistry({ config, initialView = null }) {
 
       {pdfModal && (
         <PdfModal {...pdfModal} onClose={() => setPdfModal(null)} showNotif={showNotif} />
+      )}
+
+      {snapshotStatus === "no-snapshot" && (
+        <div className="tbl-empty" role="status">
+          Connect once to download offline data. Your records will then be available on this device.
+        </div>
       )}
 
       {showUploadModal && (

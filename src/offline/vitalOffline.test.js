@@ -5,7 +5,9 @@ const mocks = vi.hoisted(() => {
   const isDbAvailable = vi.fn();
   const apiFetch = vi.fn();
   const createPdfBlobFromData = vi.fn();
-  return { mockDb, isDbAvailable, apiFetch, createPdfBlobFromData };
+  const readSnapshot = vi.fn(async () => null);
+  const updateSnapshot = vi.fn(async () => ({ status: "no-snapshot" }));
+  return { mockDb, isDbAvailable, apiFetch, createPdfBlobFromData, readSnapshot, updateSnapshot };
 });
 
 vi.mock("./db", () => ({
@@ -24,6 +26,11 @@ vi.mock("../services/apiFetch", () => ({
 
 vi.mock("../utils/pdfUtils", () => ({
   createPdfBlobFromData: mocks.createPdfBlobFromData,
+}));
+
+vi.mock("./snapshotStore", () => ({
+  readSnapshot: mocks.readSnapshot,
+  updateSnapshot: mocks.updateSnapshot,
 }));
 
 import * as vitalOffline from "./vitalOffline";
@@ -78,5 +85,16 @@ describe("vitalOffline.loadPdfForRecord", () => {
     const result = await vitalOffline.loadPdfForRecord("birth", "", 42, {});
 
     expect(result).toBe(cached);
+  });
+
+  it("returns an explicit no-snapshot state for VRM list reads", async () => {
+    mocks.isDbAvailable.mockReturnValue(false);
+
+    await expect(
+      vitalOffline.loadListWithFallback("birth", "/api/birth/records", "records"),
+    ).resolves.toMatchObject({
+      status: "no-snapshot",
+      message: expect.stringContaining("Connect once"),
+    });
   });
 });
