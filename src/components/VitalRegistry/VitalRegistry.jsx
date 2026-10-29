@@ -415,7 +415,7 @@ export default function VitalRegistry({ config, initialView = null }) {
 
       {snapshotStatus === "no-snapshot" && (
         <div className="tbl-empty" role="status">
-          Connect once to download offline data. Your records will then be available on this device.
+          Connect once to download offline data.
         </div>
       )}
 

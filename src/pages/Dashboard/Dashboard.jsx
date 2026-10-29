@@ -1062,11 +1062,13 @@ const AnalyticsDashboard = ({ recordLinks = {} }) => {
       )}
 
       {error && (
-        <div className="an-error-banner">
+        <div className={error === "Connect once to download offline data." ? "an-info-banner" : "an-error-banner"}>
           {String(error)}
-          <button className="an-error-retry" onClick={() => refetch()} style={{ marginLeft: 12 }}>
-            Retry
-          </button>
+          {error !== "Connect once to download offline data." && (
+            <button className="an-error-retry" onClick={() => refetch()} style={{ marginLeft: 12 }}>
+              Retry
+            </button>
+          )}
         </div>
       )}
 

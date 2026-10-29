@@ -19,7 +19,7 @@ const ENDPOINTS = {
 const STALE_MS = 60_000;
 const RECOVERY_POLL_MS = 6000; // while showing saved data, try the server this often
 const memCache = new Map();
-const NOT_SAVED = /not saved on this device|no snapshot is available/i;
+const NOT_SAVED = /not saved on this device|no snapshot is available|connect once to download offline data/i;
 
 const getCacheKey = () => {
   try {
@@ -114,7 +114,7 @@ export default function useAnalyticsData() {
           okCount === 0 && failures.every((f) => NOT_SAVED.test(f.message));
         setError(
           nothingSaved
-            ? "Connect once to download offline data. The dashboard will then stay available offline."
+            ? "Connect once to download offline data."
             : `${failures.length} dashboard section(s) could not be loaded: ${failures
                 .map((f) => f.name)
                 .join(", ")}.`

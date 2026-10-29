@@ -154,7 +154,7 @@ export async function getDashboardData(url, { signal } = {}) {
   if (signal?.aborted) throw new DOMException("The request was aborted.", "AbortError");
   const snapshot = await readSnapshot();
   if (!snapshot) {
-    const error = new Error("No snapshot is available. Connect once to download offline data.");
+    const error = new Error("Connect once to download offline data.");
     error.status = "no-snapshot";
     throw error;
   }

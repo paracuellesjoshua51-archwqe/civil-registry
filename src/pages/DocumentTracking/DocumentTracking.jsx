@@ -515,7 +515,9 @@ export default function DocumentTracking() {
       if (listRequestIdRef.current !== requestId) return true;
       console.error("[DocumentTracking] Failed to load documents:", e);
       if (documentsRef.current.length === 0) {
-        setListError(e.message || "Could not reach the server.");
+        setListError(e.status === "no-snapshot"
+          ? "Connect once to download offline data."
+          : e.message || "Could not reach the server.");
       }
       return false;
     } finally {
@@ -552,7 +554,9 @@ export default function DocumentTracking() {
     } catch (e) {
       if (detailRequestIdRef.current !== requestId) return true;
       console.error("[DocumentTracking] Failed to load document detail:", e);
-      setDetailError(e.message || "Could not reach the server.");
+      setDetailError(e.status === "no-snapshot"
+        ? "Connect once to download offline data."
+        : e.message || "Could not reach the server.");
       setDetail(null);
       return false;
     } finally {
@@ -1283,9 +1287,11 @@ export default function DocumentTracking() {
         </div>
 
         {listError && (
-          <div className="dt-empty" style={{ marginBottom: 12 }}>
-            Could not load documents: {listError}{" "}
-            <button className="dt-btn dt-btn-ghost" onClick={() => loadList()}>Retry</button>
+          <div className="dt-empty" style={{ marginBottom: 12 }} role={listError === "Connect once to download offline data." ? "status" : undefined}>
+            {listError === "Connect once to download offline data."
+              ? listError
+              : <>Could not load documents: {listError}{" "}
+                <button className="dt-btn dt-btn-ghost" onClick={() => loadList()}>Retry</button></>}
           </div>
         )}
 
@@ -1386,9 +1392,11 @@ export default function DocumentTracking() {
 
           {!showDetailSkeleton && !detailLoading && detailError && (
             <div className="dt-card dt-detail-card">
-              <div className="dt-empty">
-                Could not load this document: {detailError}{" "}
-                <button className="dt-btn dt-btn-ghost" onClick={() => loadDetail(selectedId)}>Retry</button>
+              <div className="dt-empty" role={detailError === "Connect once to download offline data." ? "status" : undefined}>
+                {detailError === "Connect once to download offline data."
+                  ? detailError
+                  : <>Could not load this document: {detailError}{" "}
+                    <button className="dt-btn dt-btn-ghost" onClick={() => loadDetail(selectedId)}>Retry</button></>}
               </div>
             </div>
           )}
@@ -1407,10 +1415,12 @@ export default function DocumentTracking() {
                 }}
               >
                 {listError ? (
-                  <>
-                    Could not load documents.{" "}
-                    <button className="dt-btn dt-btn-ghost" onClick={() => loadList()}>Retry</button>
-                  </>
+                  listError === "Connect once to download offline data."
+                    ? listError
+                    : <>
+                      Could not load documents.{" "}
+                      <button className="dt-btn dt-btn-ghost" onClick={() => loadList()}>Retry</button>
+                    </>
                 ) : selectedId != null ? (
                   <>
                     Loading document…{" "}

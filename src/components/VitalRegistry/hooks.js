@@ -6,6 +6,16 @@ import { getPdfBlobUrl } from "../../utils/pdfUtils";
 /** Adapter: showNotif("message", "success" | "error") on top of pushToast. */
 export function useShowNotif() {
   return useCallback((message, type = "success") => {
+    if (type === "neutral") {
+      pushToast({
+        title: "Offline data",
+        message,
+        type: "neutral",
+        presentation: "status",
+        duration: 5000,
+      });
+      return;
+    }
     const ok = type === "success";
     pushToast({
       title: ok ? "Success" : "Error",

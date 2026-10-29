@@ -54,7 +54,7 @@ export async function cachedGetJson(url, { entity = 'http', signal, maxEntries =
 
   // Nothing saved. If the server answered with an error, show that; otherwise we are simply offline.
   if (lastErr?.http) throw lastErr;
-  const error = new Error('No snapshot is available. Connect once to download offline data.');
+  const error = new Error('Connect once to download offline data.');
   error.status = 'no-snapshot';
   throw error;
 }

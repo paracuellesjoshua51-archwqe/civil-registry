@@ -312,7 +312,7 @@ export function useVitalData({ entity, api, showNotif }) {
       if (now - lastWarn.current < 5000) return;
       if (res.status === "no-snapshot") {
         lastWarn.current = now;
-        notifyRef.current(`Connect once to download offline ${label}.`, "error");
+        notifyRef.current("Connect once to download offline data.", "neutral");
         return;
       }
       if (isDbAvailable() && (await checkNow())) {

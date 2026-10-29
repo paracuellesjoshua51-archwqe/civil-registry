@@ -224,15 +224,22 @@ const Login = () => {
         }
 
         const msgs = {
-          no_record: "Server unavailable. Log in online at least once on this device first.",
+          no_record: "Connect once to download offline data.",
           locked: "Too many offline attempts. Try again in a minute.",
           bad_password: "Invalid username or password.",
         };
-        pushToast({
-          title: "Login failed",
-          message: msgs[res.reason] || "Server error. Please try again later.",
-          success: false,
-        });
+        pushToast(res.reason === "no_record"
+          ? {
+            title: "Offline data",
+            message: msgs.no_record,
+            type: "neutral",
+            presentation: "status",
+          }
+          : {
+            title: "Login failed",
+            message: msgs[res.reason] || "Server error. Please try again later.",
+            success: false,
+          });
         setLoading(false);
         return;
       }
